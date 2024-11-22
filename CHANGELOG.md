@@ -1,0 +1,317 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.9.0-dev](https://github.com/adam-cattermole/wasm-shim/releases/tag/v0.9.0-dev) - 2024-11-22
+
+### Fixed
+
+- fix tests
+- fix wasm config && deploy limitador in verbose mode
+- fix wasm config
+- fix authorino deployment
+- fix doc link
+- fix documentation
+- fix tests for the new log format
+- fix clippy
+- fix tests: add expectations for tracing headers
+- fix return value when host property does not exist from data.selector
+- fix more clippy issues
+- fix clippy issues
+- fix current e2e tests
+- fixed dev environment
+- fix build descriptors
+- fix clippy issues
+- fix lint issues
+
+### Other
+
+- Test using release-plz
+- Bump version to v0.9.0-dev
+- alexclippy comment addressed about unnecessary reference count cloning
+- Fold subsequent calls to limitador into a single one
+- runtime actions introduced
+- Expect in tests
+- Replace all unwraps
+- Merge pull request [#146](https://github.com/adam-cattermole/wasm-shim/pull/146) from Kuadrant/cel_generated
+- Adds a test to validate generated CEL works
+- Kuadrant/developers as CODEOWNERS
+- .github/CODEOWNERS and .github/release.yml
+- version bump to 0.8.0-dev
+- Put debug attributes function behind feature flag
+- Add debug code for logging well-known attributes
+- Update cel interpreter/parser
+- Use real data in tests
+- Add data collected from envoy well-known attributes
+- Rename util module to common in new util module
+- selector data type 🔥
+- change visibility of property::get_property to the parent module
+- empty predicates do apply
+- update docs
+- remove unused conditions
+- Err out better when failing to eval CEL
+- Merge pull request [#126](https://github.com/adam-cattermole/wasm-shim/pull/126) from Kuadrant/query_string
+- Merge pull request [#134](https://github.com/adam-cattermole/wasm-shim/pull/134) from Kuadrant/fix-auth-timestamp
+- Set the protobuf timestamp to the correct value
+- Update local deployment configuration
+- Simplify the consumption of the iterator
+- substring counts chars, not bytes
+- CEL Strings extension macros
+- Merge pull request [#130](https://github.com/adam-cattermole/wasm-shim/pull/130) from Kuadrant/get_prop
+- update reference example
+- connection.id is unsigned
+- Assert on the path requested when accessing well known attr
+- [e2e] Updating remote address e2e to use predicates
+- [config] Updating using cel expressions and predicates
+- [envoy] Using new selector for host stored props
+- [authconfig] New dynamic metadata added
+- README reflecting new config
+- request.time is a Timestamp
+- Support for CEL expressions in data exports
+- No more dead code
+- Remove trailing comment
+- Support headers in CEL
+- Don't warn on structs when storing values as json
+- Deal with previously resolved values on path digging into these
+- Have auth in wasm prop and log on unexpected type
+- Deal with more types & json encode values
+- wasm props are in the filter_state
+- but lets fall back to string on bad json
+- Deal with unknown attributes as JSON literals
+- Moar clippy
+- Transparently replace PatternExpression with CEL Predicate
+- Predicate test
+- Typos and test infra for hostcalls::get_property
+- Notes for auth/json integration
+- Clippy fixes
+- Wired the base
+- Slowly getting there
+- ports are u64, not strings... this err'ed into Default
+- Refactored using AttributeValue everywhere
+- Refactored using PropertyPath everywhere
+- Refactored property stuff to data::property
+- Refactored Attribute to data::AttributeValue
+- Add tests for conditional actions
+- Add conditions to Action
+- rename Extensions -> Services
+- move action to separate module
+- Move Actions up to ActionSets
+- Move hostnames into routeRuleConditions
+- Rename rules to routeRuleConditions
+- Rename Policy to ActionSet
+- step 6 integration test
+- step 5 doc
+- pattern expressions path() back
+- step 4 e2e integration test
+- step 3 new integration environment
+- step 2 simplified alternative implementation
+- step 2 implement source.remote_address attribute
+- refactor Path to its own source file
+- fix tests
+- step 1 proxy all hostcalls::get_property
+- Allow manual inspect
+- Store multiple policies in the index
+- [docs] Added timeout to README
+- [refactor] Using Timeout when sending request message
+- [feat] Setting timeout as Duration
+- Update test logs
+- More dead_code
+- Add multi-extension tests
+- Add simple auth integration tests
+- Make action.data field optional
+- Move wasm_module function to util
+- Add auth to happy path config test
+- [refactor] Returning StatusCode result to decide on flow
+- [refactor] Not returning when calling `handle_error_on_grpc_response`
+- remove docker compose environment
+- [git] Ignoring .idea
+- version bump to 0.7.0-dev
+- [readme] Updating new sample config
+- [refactor] Simplifying Operation state transtion and exec of req msg
+- [refactor] OperationDispatcher within a RefCell for interior mut
+- [refactor] OperationDispatcher not using RefCell for storing operations
+- Revert removal of allOf within conditions
+- Move building of descriptors to action time
+- Re-order test expectations to follow exactly the execution order
+- Match on all conditions not any
+- Refactor actions into rules
+- Store dynamic metadata in filter_state
+- Update examples to include authenticated rate limiting
+- Move data from rules to actions
+- Rename domain -> scope and move to action
+- Update test expected logs
+- Update debug logs
+- Add auth examples to the doc
+- Process auth CheckResponse
+- [fix] Indexing waiting operations only when triggered Pending => Waiting
+- [refactor] Explicit testing
+- [refactor] Renaming rlp to policy for consistency
+- [fix] Changed behaviour, removing and triggering next op at same step
+- [refactor] Using action `failure_mode` when processing grpc error
+- [refactor] Passing by references instead of cloning
+- [refactor] Wiring filter with dispatcher
+- [refactor] Indexing waiting operations by `token_id`
+- [refactor, feature] Adding a new GrpcResponse type
+- [refactor] Specifying that it's about request messages
+- [refactor] OperationDispatcher triggering procedures
+- [refactor] Changing name to `Operation` instead of `Action`
+- [feat] Action dispatcher state machine, naive impl
+- Add some documentation for auth development
+- Add original limitador examples to plugin config
+- Update plugin config for envoy
+- Set the host in authconfig to an arbitrary string
+- Rename make/auth.mk to make/deploy.mk
+- Add simple authconfig to local environment
+- Add tls and notls envoy configuration files
+- Deploy limitador as part of the kind cluster
+- Local auth dev environment
+- [refactor] Fix `OperationDispatcher.next()` behaviour
+- [refactor] Operation responsible of providing hostcalls fns
+- [refactor] grpc_call function delegated to the caller
+- [refactor] Wiring up with the new API
+- [refactor] OperationDispatcher.next() returns Option<Operation>
+- [refactor] Inlucing Extension within Service and Operation as Rc
+- [refactor] Implementing own Message for GrpcMessage
+- [refactor] Wiring up altogether
+- [refactor] OperationDispatcher triggering procedures
+- [clean] Removing obsolete code
+- [wip, refactor] GrpcServiceHandler builds message
+- [refactor] Configuration, adding Actions
+- [refactor] Changing name to `Operation` instead of `Action`
+- [tmp] Allowing dead code
+- [feat] A simplistic approach, agnostic to extension type
+- [feat] Action dispatcher state machine, naive impl
+- Update tests to use new config
+- Add and use extensions from configuration
+- Create service at configuration level
+- Ignore authservice until used
+- Fix tests using header resolver
+- Use new header resolver in the service
+- Genericise the service to send any type of M
+- Pass in the host to set in context_extensions
+- Add initial implementation of auth service
+- Minor refactor of rate-limit service
+- Remove use of filter in get_attribute
+- Allow deprecated lints
+- Merge pull request [#83](https://github.com/adam-cattermole/wasm-shim/pull/83) from Kuadrant/refactor-unstable-library-feature
+- refactor unstable .inspect_err feature for rust <=1.75
+- [ci] Clippy Allowing warnings
+- docker image with git sha only for pushes on main branch
+- gh action: license scan by fossa: test
+- rust badge
+- gh action: license scan by fossa
+- Apache-2.0 license
+- [refactor] Passing `tracing_headers` to `RateLimitService`
+- [refactor] Extracting logic to Service trait and RateLimitService
+- Update log messages
+- Set allow(dead_code) on get_attribute
+- Use default value if present
+- Move attribute parsing to attribute trait
+- [refactor] Delegating building descriptors to the Policy impl
+- [refactor] Renaming RateLimitPolicy to Policy
+- Deps
+- A little compacter
+- Bool is 1 byte, not 8
+- Work around bug
+- tests, fixes and cleanups
+- Missing types on parse
+- Value parsing from host
+- Report errors correctly
+- Infer unknown types from provided value
+- Easy change & clean ups
+- All covered
+- Fix wasmbind
+- Moar WIP
+- Fix compile
+- Config validation
+- Whole lotta wip
+- A little rustier
+- Update to latest toolchain
+- context in the beginning of the log line
+- logging enhancements
+- update release name to kuadrant-wasm-shim-${{github.ref_name}}
+- wasm binary version enhanced traces
+- Update .github/workflows/rust.yaml
+- Update .github/workflows/tests.yaml
+- GH actions: move tests to it's own workflow
+- GH actions: test workflow
+- publish binary on release
+- Remove unnecessary package
+- Refactor implementation
+- Use contants for headers and explicitly lowercase
+- Propagate opentelemetry tracing headers in requests to limitador
+- only run gh action on local PRs
+- Fixed some pub use
+- Issue/PR to board
+- back to dep wasm-test-framework from kuadrant branch
+- Use empty string ("") when querying a non existing property
+- clarify selectors
+- replace startsWith and endsWith operators with startswith and endswith
+- doc new wasm config struct for RLPv2
+- replace starts_with and ends_with operators with startsWith and endsWith
+- Tokenize selector fields with escape char
+- dev env: new plugin struct v2
+- "matches" operator in conditions
+- wasm configuration v2
+- Fix
+- Use our fork of the proxy-wasm test framework
+- github action fixes
+- Test for wasm module to be there
+- No need to assert the config parsed
+- All the asserts
+- Can't run test in parallel, with mutated shared state
+- Deps
+- Test for serialized format and e2e test
+- Passes most of the time?
+- wip
+- WAT
+- remove test fw
+- First test
+- Refactoring
+- Renamed some fields, to make it somewhat clearer
+- Add headers from the rlp call to the response
+- Clippy on all targets and few fixes
+- clippy fix
+- path match using strip_suffix
+- path match works with slices
+- address clippy issues
+- support path prefix rules
+- remove kind based dev testing env
+- git remove submodule authorino-operator limitador-operator
+- Updated deps
+- Metadata action type ([#22](https://github.com/adam-cattermole/wasm-shim/pull/22))
+- README and local testing resources
+- policy struct update according to the new semantic nil == []
+- request info via self.get_http_request_header method
+- http_context: apply_rule -> rule_applies
+- http context implementation with the new struct
+- new plugin config struct
+- enhance readability
+- policy index
+- image build
+- rust basic GH actions
+- local dev/testing env based on docker-compose
+- git ignore deploy/*.wasm
+- building enhancements
+- bump sdk version to 0.2 ([#11](https://github.com/adam-cattermole/wasm-shim/pull/11))
+- Add Dockerfile and Makefile ([#8](https://github.com/adam-cattermole/wasm-shim/pull/8))
+- initiate new API ([#3](https://github.com/adam-cattermole/wasm-shim/pull/3))
+- Integrating with limitador ([#2](https://github.com/adam-cattermole/wasm-shim/pull/2))
+- update module with the previous changes
+- deny req if gRPC call is not made
+- inject api-key example authconfig; Bug fix
+- add failure_mode and test remote url for module
+- add release version of module for testing
+- initialize Makefile with example deployment
+- add authorino-operator as submodule
+- build script to generate .rs files from protobufs
+- ignore generated files
+- add example deployment files
+- intialize with minimal working filter
+- add third-party protobufs for communication
+- Add README.md
