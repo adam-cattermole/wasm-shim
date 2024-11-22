@@ -1,3 +1,4 @@
 [workspace]
 publish = false
 changelog_update = false
+release_always = false
