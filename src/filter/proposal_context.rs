@@ -1,28 +1,62 @@
 use crate::action_set_index::ActionSetIndex;
 use crate::filter::proposal_context::no_implicit_dep::{EndRequestOperation, HeadersOperation};
+use crate::service::HeaderResolver;
 use log::warn;
+use proxy_wasm::hostcalls;
 use proxy_wasm::traits::{Context, HttpContext};
 use proxy_wasm::types::{Action, Status};
 use std::mem;
+use std::rc::Rc;
 
 pub mod no_implicit_dep {
-    use proxy_wasm::traits::HttpContext;
+    use crate::runtime_action_set::RuntimeActionSet;
+    use crate::service::GrpcRequest;
+    use std::rc::Rc;
 
     #[allow(dead_code)]
-    pub enum Operation {
+    pub enum PendingOperation {
+        SendGrpcRequest(GrpcMessageSenderOperation),
         AwaitGrpcResponse(GrpcMessageReceiverOperation),
         AddHeaders(HeadersOperation),
         Die(EndRequestOperation),
     }
-    pub struct GrpcMessageReceiverOperation {}
+
+    pub struct GrpcMessageSenderOperation {
+        runtime_action_set: Rc<RuntimeActionSet>,
+        current_index: usize,
+    }
+
+    impl GrpcMessageSenderOperation {
+        pub fn progress(self) -> (GrpcRequest, PendingOperation) {
+            let action_set = self
+                .runtime_action_set
+                .runtime_actions
+                .get(self.current_index)
+                .unwrap();
+            let msg = action_set.create_message();
+            // todo(adam-cattermole): should this instead return only a GrpcReceiver? failure?
+            (
+                msg,
+                PendingOperation::AwaitGrpcResponse(GrpcMessageReceiverOperation {
+                    runtime_action_set: self.runtime_action_set,
+                    current_index: self.current_index,
+                }),
+            )
+        }
+    }
+
+    pub struct GrpcMessageReceiverOperation {
+        runtime_action_set: Rc<RuntimeActionSet>,
+        current_index: usize,
+    }
 
     impl GrpcMessageReceiverOperation {
-        pub fn process<T: HttpContext>(self, _msg: &[u8], _ctx: &mut T) -> Operation {
+        pub fn progress(self, _msg: &[u8]) -> PendingOperation {
             todo!()
         }
 
-        pub fn fail<T: HttpContext>(self, _ctx: &mut T) -> Operation {
-            Operation::Die(EndRequestOperation { status: 500 })
+        pub fn fail(self) -> PendingOperation {
+            PendingOperation::Die(EndRequestOperation { status: 500 })
         }
     }
 
@@ -35,19 +69,23 @@ pub mod no_implicit_dep {
 
 struct Filter {
     index: ActionSetIndex,
+    header_resolver: Rc<HeaderResolver>,
 
     grpc_message_receiver_operation: Option<no_implicit_dep::GrpcMessageReceiverOperation>,
     headers_operations: Vec<HeadersOperation>,
 }
 
 impl Context for Filter {
-    fn on_grpc_call_response(&mut self, _token_id: u32, status_code: u32, _resp_size: usize) {
+    fn on_grpc_call_response(&mut self, _token_id: u32, status_code: u32, resp_size: usize) {
         let receiver = mem::take(&mut self.grpc_message_receiver_operation)
             .expect("We need an operation pending a gRPC response");
         let next = if status_code != Status::Ok as u32 {
-            receiver.process(&[], self)
+            match self.get_grpc_call_response_body(0, resp_size) {
+                Some(response_body) => receiver.progress(response_body.as_slice()),
+                None => receiver.fail(),
+            }
         } else {
-            receiver.fail(self)
+            receiver.fail()
         };
         self.handle_operation(next);
     }
@@ -63,7 +101,7 @@ impl HttpContext for Filter {
                 .iter()
                 .find(|action_set| action_set.conditions_apply(/* self */))
             {
-                self.handle_operation(action_set.start_flow(self))
+                self.handle_operation(action_set.start_flow())
             }
         }
         Action::Continue
@@ -78,15 +116,22 @@ impl HttpContext for Filter {
 }
 
 impl Filter {
-    fn handle_operation(&mut self, operation: no_implicit_dep::Operation) {
+    fn handle_operation(&mut self, operation: no_implicit_dep::PendingOperation) {
         match operation {
-            no_implicit_dep::Operation::AwaitGrpcResponse(msg) => {
-                self.grpc_message_receiver_operation = Some(msg)
+            no_implicit_dep::PendingOperation::SendGrpcRequest(sender_op) => {
+                let (msg, op) = sender_op.progress();
+                match self.send_grpc_request(msg) {
+                    Ok(_token) => self.handle_operation(op),
+                    Err(_status) => {}
+                }
             }
-            no_implicit_dep::Operation::AddHeaders(headers) => {
-                self.headers_operations.push(headers)
+            no_implicit_dep::PendingOperation::AwaitGrpcResponse(receiver_op) => {
+                self.grpc_message_receiver_operation = Some(receiver_op)
             }
-            no_implicit_dep::Operation::Die(die) => self.die(die),
+            no_implicit_dep::PendingOperation::AddHeaders(header_op) => {
+                self.headers_operations.push(header_op)
+            }
+            no_implicit_dep::PendingOperation::Die(die_op) => self.die(die_op),
         }
     }
 
@@ -105,5 +150,23 @@ impl Filter {
                 split_host[0].to_owned()
             }
         }
+    }
+
+    fn send_grpc_request(&self, req: crate::service::GrpcRequest) -> Result<u32, Status> {
+        let headers = self
+            .header_resolver
+            .get_with_ctx(self)
+            .iter()
+            .map(|(header, value)| (*header, value.as_slice()))
+            .collect();
+
+        self.dispatch_grpc_call(
+            req.upstream_name(),
+            req.service_name(),
+            req.method_name(),
+            headers,
+            req.message(),
+            req.timeout(),
+        )
     }
 }
