@@ -70,11 +70,18 @@ impl RuntimeAction {
         Some(other)
     }
 
-    pub fn process(&self) -> Option<crate::service::GrpcRequest> {
+    pub fn process_request(&self) -> Option<crate::service::GrpcRequest> {
         if !self.conditions_apply() {
             None
         } else {
             Some(self.grpc_service().build_request(self.build_message()))
+        }
+    }
+
+    pub fn process_response(&self, msg: &[u8]) {
+        match self {
+            Self::Auth(auth_action) => auth_action.process_response(msg),
+            Self::RateLimit(rl_action) => todo!(),
         }
     }
 

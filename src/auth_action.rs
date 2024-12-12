@@ -1,7 +1,17 @@
 use crate::configuration::{Action, FailureMode, Service};
-use crate::data::Predicate;
-use crate::service::GrpcService;
-use log::error;
+use crate::data::{store_metadata, Predicate, PredicateVec};
+use crate::envoy::{
+    CheckResponse, CheckResponse_oneof_http_response, HeaderValueOption, StatusCode,
+};
+use crate::filter::proposal_context::no_implicit_dep::{
+    EndRequestOperation, HeadersOperation, PendingOperation,
+};
+use crate::service::grpc_message::GrpcMessageResponse;
+use crate::service::{GrpcResult, GrpcService};
+use log::{debug, error};
+use protobuf::Message;
+use proxy_wasm::hostcalls;
+use proxy_wasm::types::MapType;
 use std::rc::Rc;
 
 #[derive(Debug)]
@@ -39,6 +49,60 @@ impl AuthAction {
 
     pub fn get_failure_mode(&self) -> FailureMode {
         self.grpc_service.get_failure_mode()
+    }
+
+    pub fn process_response(&self, msg: &[u8]) -> Option<PendingOperation> {
+        //todo(adam-cattermole):unwrap, error handling, ...
+        let check_response: CheckResponse = Message::parse_from_bytes(msg).unwrap();
+
+        // store dynamic metadata in filter state
+        store_metadata(check_response.get_dynamic_metadata());
+
+        match check_response.http_response {
+            Some(CheckResponse_oneof_http_response::ok_response(ok_response)) => {
+                debug!("process_auth_grpc_response: received OkHttpResponse");
+                if !ok_response.get_response_headers_to_add().is_empty() {
+                    panic!("process_auth_grpc_response: response contained response_headers_to_add which is unsupported!")
+                }
+                if !ok_response.get_headers_to_remove().is_empty() {
+                    panic!("process_auth_grpc_response: response contained headers_to_remove which is unsupported!")
+                }
+                if !ok_response.get_query_parameters_to_set().is_empty() {
+                    panic!("process_auth_grpc_response: response contained query_parameters_to_set which is unsupported!")
+                }
+                if !ok_response.get_query_parameters_to_remove().is_empty() {
+                    panic!("process_auth_grpc_response: response contained query_parameters_to_remove which is unsupported!")
+                }
+
+                let response_headers = Self::get_header_vec(ok_response.get_headers());
+                Some(PendingOperation::AddHeaders(HeadersOperation::new(
+                    response_headers,
+                )))
+            }
+            Some(CheckResponse_oneof_http_response::denied_response(denied_response)) => {
+                debug!("process_auth_grpc_response: received DeniedHttpResponse");
+                let status_code = denied_response.get_status().code;
+                let response_headers = Self::get_header_vec(denied_response.get_headers());
+                Some(PendingOperation::Die(EndRequestOperation::new(
+                    status_code as u32,
+                    response_headers,
+                    Some(denied_response.body),
+                )))
+            }
+            None => Some(PendingOperation::Die(EndRequestOperation::new_with_status(
+                500,
+            ))),
+        }
+    }
+
+    fn get_header_vec(headers: &[HeaderValueOption]) -> Vec<(String, String)> {
+        headers
+            .iter()
+            .map(|header| {
+                let hv = header.get_header();
+                (&hv.key, &hv.value)
+            })
+            .collect()
     }
 }
 

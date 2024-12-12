@@ -36,7 +36,7 @@ pub use {
         AttributeContext, AttributeContext_HttpRequest, AttributeContext_Peer,
         AttributeContext_Request,
     },
-    base::Metadata,
+    base::{HeaderValueOption, Metadata},
     external_auth::{CheckRequest, CheckResponse, CheckResponse_oneof_http_response},
     http_status::StatusCode,
     ratelimit::{RateLimitDescriptor, RateLimitDescriptor_Entry},
