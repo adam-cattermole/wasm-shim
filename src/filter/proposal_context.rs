@@ -19,6 +19,8 @@ pub mod no_implicit_dep {
         AwaitGrpcResponse(GrpcMessageReceiverOperation),
         AddHeaders(HeadersOperation),
         Die(EndRequestOperation),
+        //todo(adam-cattermole): does Done make sense? in this case no PendingOperation
+        // instead just Option<PendingOperation>?
         Done(),
     }
 
@@ -28,7 +30,7 @@ pub mod no_implicit_dep {
     }
 
     impl GrpcMessageSenderOperation {
-        // todo(adam-cattermole): unwrap..
+        //todo(adam-cattermole): should this return a tuple? alternative?
         pub fn progress(self) -> (Option<GrpcRequest>, PendingOperation) {
             let (index, msg) = self.runtime_action_set.process(self.current_index);
             match msg {
@@ -41,7 +43,6 @@ pub mod no_implicit_dep {
                     }),
                 ),
             }
-            // todo(adam-cattermole): should this instead return only a GrpcReceiver? failure?
         }
     }
 
@@ -52,18 +53,62 @@ pub mod no_implicit_dep {
 
     impl GrpcMessageReceiverOperation {
         pub fn progress(self, _msg: &[u8]) -> PendingOperation {
-            todo!()
+            let action = self
+                .runtime_action_set
+                .runtime_actions
+                .get(self.current_index)
+                .unwrap();
+
+            PendingOperation::Done()
         }
 
         pub fn fail(self) -> PendingOperation {
-            PendingOperation::Die(EndRequestOperation { status: 500 })
+            PendingOperation::Die(EndRequestOperation::new_with_status(500))
         }
     }
 
-    pub struct HeadersOperation {}
+    pub struct HeadersOperation {
+        headers: Vec<(String, String)>,
+    }
+
+    impl HeadersOperation {
+        pub fn new(headers: Vec<(String, String)>) -> Self {
+            Self { headers }
+        }
+        pub fn headers(self) -> Vec<(String, String)> {
+            self.headers
+        }
+    }
 
     pub struct EndRequestOperation {
         pub status: u32,
+        pub headers: Vec<(String, String)>,
+        pub body: Option<String>,
+    }
+
+    impl EndRequestOperation {
+        pub fn new(status: u32, headers: Vec<(String, String)>, body: Option<String>) -> Self {
+            Self {
+                status,
+                headers,
+                body,
+            }
+        }
+
+        pub fn new_with_status(status: u32) -> Self {
+            Self::new(status, Vec::default(), None)
+        }
+
+        pub fn headers(&self) -> Vec<(&str, &str)> {
+            self.headers
+                .iter()
+                .map(|(header, value)| (header.as_str(), value.as_str()))
+                .collect()
+        }
+
+        pub fn body(&self) -> Option<&[u8]> {
+            self.body.as_deref().map(|s| s.as_bytes())
+        }
     }
 }
 
@@ -81,7 +126,7 @@ impl Context for Filter {
             .expect("We need an operation pending a gRPC response");
         let next = if status_code != Status::Ok as u32 {
             match self.get_grpc_call_response_body(0, resp_size) {
-                Some(response_body) => receiver.progress(response_body.as_slice()),
+                Some(response_body) => receiver.progress(&response_body),
                 None => receiver.fail(),
             }
         } else {
@@ -108,8 +153,10 @@ impl HttpContext for Filter {
     }
 
     fn on_http_response_headers(&mut self, _num_headers: usize, _end_of_stream: bool) -> Action {
-        for _op in self.headers_operations.drain(..) {
-            todo!("Add the headers")
+        for op in self.headers_operations.drain(..) {
+            for (header, value) in &op.headers() {
+                self.add_http_response_header(header, value)
+            }
         }
         Action::Continue
     }
@@ -140,7 +187,7 @@ impl Filter {
     }
 
     fn die(&mut self, die: EndRequestOperation) {
-        self.send_http_response(die.status, Vec::default(), None);
+        self.send_http_response(die.status, die.headers(), die.body());
     }
 
     fn request_authority(&self) -> String {
@@ -156,7 +203,7 @@ impl Filter {
         }
     }
 
-    fn send_grpc_request(&self, req: crate::service::GrpcRequest) -> Result<u32, Status> {
+    fn send_grpc_request(&self, req: GrpcRequest) -> Result<u32, Status> {
         let headers = self
             .header_resolver
             .get_with_ctx(self)

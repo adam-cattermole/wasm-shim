@@ -1,8 +1,7 @@
 use crate::configuration::{ActionSet, Service};
-use crate::data::Predicate;
+use crate::data::{Predicate, PredicateVec};
 use crate::runtime_action::RuntimeAction;
 use crate::service::GrpcRequest;
-use log::error;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -67,7 +66,7 @@ impl RuntimeActionSet {
 
     pub fn process(&self, start: usize) -> (usize, Option<GrpcRequest>) {
         for (i, action_set) in self.runtime_actions.iter().skip(start).enumerate() {
-            if let Some(msg) = action_set.process() {
+            if let Some(msg) = action_set.process_request() {
                 return (start + i, Some(msg));
             }
         }
