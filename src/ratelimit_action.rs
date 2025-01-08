@@ -10,7 +10,7 @@ use crate::filter::proposal_context::no_implicit_dep::{
 };
 use crate::service::GrpcService;
 use cel_interpreter::Value;
-use log::error;
+use log::{debug, error};
 use protobuf::{Message, RepeatedField};
 use std::rc::Rc;
 
@@ -174,12 +174,16 @@ impl RateLimitAction {
             RateLimitResponse {
                 overall_code: RateLimitResponse_Code::UNKNOWN,
                 ..
-            } => PendingOperation::Die(EndRequestOperation::default()),
+            } => {
+                debug!("process_response_rl: received UNKNOWN response");
+                PendingOperation::Die(EndRequestOperation::default())
+            }
             RateLimitResponse {
                 overall_code: RateLimitResponse_Code::OVER_LIMIT,
                 response_headers_to_add: rl_headers,
                 ..
             } => {
+                debug!("process_response_rl: received OVER_LIMIT response");
                 let response_headers = Self::get_header_vec(rl_headers);
                 PendingOperation::Die(EndRequestOperation::new(
                     StatusCode::TooManyRequests as u32,
@@ -192,11 +196,12 @@ impl RateLimitAction {
                 response_headers_to_add: additional_headers,
                 ..
             } => {
+                debug!("process_response_rl: received OK response");
                 let response_headers = Self::get_header_vec(additional_headers);
-                if !response_headers.is_empty() {
-                    PendingOperation::AddHeaders(HeadersOperation::new(response_headers))
-                } else {
+                if response_headers.is_empty() {
                     PendingOperation::Done()
+                } else {
+                    PendingOperation::AddHeaders(HeadersOperation::new(response_headers))
                 }
             }
         }

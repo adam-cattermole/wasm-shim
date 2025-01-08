@@ -3,7 +3,7 @@ use crate::filter::proposal_context::no_implicit_dep::{
     EndRequestOperation, GrpcMessageSenderOperation, HeadersOperation, PendingOperation,
 };
 use crate::service::{GrpcRequest, HeaderResolver};
-use log::{error, warn};
+use log::{debug, error, warn};
 use proxy_wasm::traits::{Context, HttpContext};
 use proxy_wasm::types::{Action, Status};
 use std::mem;
@@ -215,7 +215,7 @@ impl HttpContext for Filter {
                     Rc::clone(action_set),
                     0,
                 ));
-                self.handle_operation(op)
+                return self.handle_operation(op);
             }
         }
         Action::Continue
@@ -233,28 +233,40 @@ impl HttpContext for Filter {
 }
 
 impl Filter {
-    fn handle_operation(&mut self, operation: no_implicit_dep::PendingOperation) {
+    fn handle_operation(&mut self, operation: PendingOperation) -> Action {
         match operation {
-            no_implicit_dep::PendingOperation::SendGrpcRequest(sender_op) => {
+            PendingOperation::SendGrpcRequest(sender_op) => {
+                debug!("handle_operation: SendGrpcRequest");
                 let (msg, op) = sender_op.progress();
                 match msg {
-                    None => (),
+                    None => self.handle_operation(op),
                     Some(m) => match self.send_grpc_request(m) {
                         Ok(_token) => self.handle_operation(op),
-                        Err(_status) => {}
+                        Err(_status) => panic!("Error sending request"),
                     },
                 }
             }
-            no_implicit_dep::PendingOperation::AwaitGrpcResponse(receiver_op) => {
-                self.grpc_message_receiver_operation = Some(receiver_op)
+            PendingOperation::AwaitGrpcResponse(receiver_op) => {
+                debug!("handle_operation: AwaitGrpcResponse");
+                self.grpc_message_receiver_operation = Some(receiver_op);
+                Action::Pause
             }
-            no_implicit_dep::PendingOperation::AddHeaders(header_op) => {
+            PendingOperation::AddHeaders(header_op) => {
+                debug!("handle_operation: AddHeaders");
                 let (header_op, next) = header_op.progress();
                 self.headers_operations.push(header_op);
                 self.handle_operation(next)
             }
-            no_implicit_dep::PendingOperation::Die(die_op) => self.die(die_op),
-            no_implicit_dep::PendingOperation::Done() => (),
+            PendingOperation::Die(die_op) => {
+                debug!("handle_operation: Die");
+                self.die(die_op);
+                Action::Continue
+            }
+            PendingOperation::Done() => {
+                debug!("handle_operation: Done");
+                self.resume_http_request();
+                Action::Continue
+            }
         }
     }
 
