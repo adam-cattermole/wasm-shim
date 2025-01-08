@@ -42,6 +42,3 @@ pub use {
     ratelimit::{RateLimitDescriptor, RateLimitDescriptor_Entry},
     rls::{RateLimitRequest, RateLimitResponse, RateLimitResponse_Code},
 };
-
-#[cfg(test)]
-pub use base::HeaderValue;
