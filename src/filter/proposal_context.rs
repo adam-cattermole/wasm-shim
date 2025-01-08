@@ -75,6 +75,12 @@ pub mod no_implicit_dep {
                     op.set_action_set_index(self.runtime_action_set, self.current_index);
                     PendingOperation::AddHeaders(op)
                 }
+                PendingOperation::Done() => {
+                    PendingOperation::SendGrpcRequest(GrpcMessageSenderOperation::new(
+                        Rc::clone(&self.runtime_action_set),
+                        self.current_index + 1,
+                    ))
+                }
                 _ => next_op,
             }
         }
@@ -232,7 +238,7 @@ impl Filter {
             no_implicit_dep::PendingOperation::SendGrpcRequest(sender_op) => {
                 let (msg, op) = sender_op.progress();
                 match msg {
-                    None => panic!("invalid state!"),
+                    None => (),
                     Some(m) => match self.send_grpc_request(m) {
                         Ok(_token) => self.handle_operation(op),
                         Err(_status) => {}
