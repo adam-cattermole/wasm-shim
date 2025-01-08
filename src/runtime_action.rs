@@ -3,11 +3,9 @@ use crate::configuration::{Action, FailureMode, Service, ServiceType};
 use crate::filter::proposal_context::no_implicit_dep::PendingOperation;
 use crate::ratelimit_action::RateLimitAction;
 use crate::service::auth::AuthService;
-use crate::service::grpc_message::GrpcMessageRequest;
 use crate::service::rate_limit::RateLimitService;
 use crate::service::GrpcService;
-use log::{debug, warn};
-use protobuf::{Message, ProtobufResult};
+use log::debug;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
@@ -78,10 +76,10 @@ impl RuntimeAction {
         }
     }
 
-    pub fn process_response(&self, msg: &[u8]) {
+    pub fn process_response(&self, msg: &[u8]) -> PendingOperation {
         match self {
             Self::Auth(auth_action) => auth_action.process_response(msg),
-            Self::RateLimit(rl_action) => todo!(),
+            Self::RateLimit(rl_action) => rl_action.process_response(msg),
         }
     }
 

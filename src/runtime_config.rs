@@ -3,11 +3,11 @@ use crate::configuration::PluginConfiguration;
 use crate::runtime_action_set::RuntimeActionSet;
 use std::rc::Rc;
 
-pub(crate) struct RuntimeConfig {
-    pub index: ActionSetIndex,
-}
+// pub(crate) struct RuntimeConfig {
+//     pub index: ActionSetIndex,
+// }
 
-impl TryFrom<PluginConfiguration> for RuntimeConfig {
+impl TryFrom<PluginConfiguration> for ActionSetIndex {
     type Error = String;
 
     fn try_from(config: PluginConfiguration) -> Result<Self, Self::Error> {
@@ -19,15 +19,13 @@ impl TryFrom<PluginConfiguration> for RuntimeConfig {
             }
         }
 
-        Ok(Self { index })
+        Ok(index)
     }
 }
 
-impl Default for RuntimeConfig {
+impl Default for ActionSetIndex {
     fn default() -> Self {
-        Self {
-            index: ActionSetIndex::new(),
-        }
+        ActionSetIndex::new()
     }
 }
 

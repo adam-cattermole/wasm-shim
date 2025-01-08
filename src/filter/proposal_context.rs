@@ -1,8 +1,9 @@
 use crate::action_set_index::ActionSetIndex;
-use crate::filter::proposal_context::no_implicit_dep::{EndRequestOperation, HeadersOperation};
+use crate::filter::proposal_context::no_implicit_dep::{
+    EndRequestOperation, GrpcMessageSenderOperation, HeadersOperation, PendingOperation,
+};
 use crate::service::{GrpcRequest, HeaderResolver};
-use log::warn;
-use proxy_wasm::hostcalls;
+use log::{error, warn};
 use proxy_wasm::traits::{Context, HttpContext};
 use proxy_wasm::types::{Action, Status};
 use std::mem;
@@ -11,6 +12,8 @@ use std::rc::Rc;
 pub mod no_implicit_dep {
     use crate::runtime_action_set::RuntimeActionSet;
     use crate::service::GrpcRequest;
+    use log::error;
+    use std::cell::OnceCell;
     use std::rc::Rc;
 
     #[allow(dead_code)]
@@ -30,6 +33,13 @@ pub mod no_implicit_dep {
     }
 
     impl GrpcMessageSenderOperation {
+        pub fn new(runtime_action_set: Rc<RuntimeActionSet>, current_index: usize) -> Self {
+            Self {
+                runtime_action_set,
+                current_index,
+            }
+        }
+
         //todo(adam-cattermole): should this return a tuple? alternative?
         pub fn progress(self) -> (Option<GrpcRequest>, PendingOperation) {
             let (index, msg) = self.runtime_action_set.process(self.current_index);
@@ -52,29 +62,67 @@ pub mod no_implicit_dep {
     }
 
     impl GrpcMessageReceiverOperation {
-        pub fn progress(self, _msg: &[u8]) -> PendingOperation {
+        pub fn progress(self, msg: &[u8]) -> PendingOperation {
             let action = self
                 .runtime_action_set
                 .runtime_actions
                 .get(self.current_index)
                 .unwrap();
 
-            PendingOperation::Done()
+            let next_op = action.process_response(msg);
+            match next_op {
+                PendingOperation::AddHeaders(mut op) => {
+                    op.set_action_set_index(self.runtime_action_set, self.current_index);
+                    PendingOperation::AddHeaders(op)
+                }
+                _ => next_op,
+            }
         }
 
         pub fn fail(self) -> PendingOperation {
-            PendingOperation::Die(EndRequestOperation::new_with_status(500))
+            PendingOperation::Die(EndRequestOperation::default())
         }
     }
 
     pub struct HeadersOperation {
         headers: Vec<(String, String)>,
+        runtime_action_set: OnceCell<Rc<RuntimeActionSet>>,
+        current_index: usize,
     }
 
     impl HeadersOperation {
         pub fn new(headers: Vec<(String, String)>) -> Self {
-            Self { headers }
+            Self {
+                headers,
+                runtime_action_set: OnceCell::new(),
+                current_index: 0,
+            }
         }
+
+        pub fn set_action_set_index(
+            &mut self,
+            action_set_index: Rc<RuntimeActionSet>,
+            index: usize,
+        ) {
+            match self.runtime_action_set.set(action_set_index) {
+                Ok(_) => self.current_index = index,
+                Err(_) => error!("Error setting action set index, already set"),
+            }
+        }
+
+        pub fn progress(self) -> (Self, PendingOperation) {
+            let next_op = match self.runtime_action_set.get() {
+                None => panic!("Invalid state, called progress without setting runtime action set"),
+                Some(runtime_action_set) => {
+                    PendingOperation::SendGrpcRequest(GrpcMessageSenderOperation::new(
+                        Rc::clone(runtime_action_set),
+                        self.current_index + 1,
+                    ))
+                }
+            };
+            (self, next_op)
+        }
+
         pub fn headers(self) -> Vec<(String, String)> {
             self.headers
         }
@@ -99,6 +147,16 @@ pub mod no_implicit_dep {
             Self::new(status, Vec::default(), None)
         }
 
+        // todo(adam-cattermole): perhaps we should be more explicit with a different function?
+        //  Default Die is with 500 Internal Server Error.
+        pub fn default() -> Self {
+            Self::new(
+                500,
+                Vec::default(),
+                Some("Internal Server Error.\n".to_string()),
+            )
+        }
+
         pub fn headers(&self) -> Vec<(&str, &str)> {
             self.headers
                 .iter()
@@ -112,8 +170,9 @@ pub mod no_implicit_dep {
     }
 }
 
-struct Filter {
-    index: ActionSetIndex,
+pub(crate) struct Filter {
+    context_id: u32,
+    index: Rc<ActionSetIndex>,
     header_resolver: Rc<HeaderResolver>,
 
     grpc_message_receiver_operation: Option<no_implicit_dep::GrpcMessageReceiverOperation>,
@@ -124,7 +183,7 @@ impl Context for Filter {
     fn on_grpc_call_response(&mut self, _token_id: u32, status_code: u32, resp_size: usize) {
         let receiver = mem::take(&mut self.grpc_message_receiver_operation)
             .expect("We need an operation pending a gRPC response");
-        let next = if status_code != Status::Ok as u32 {
+        let next = if status_code == Status::Ok as u32 {
             match self.get_grpc_call_response_body(0, resp_size) {
                 Some(response_body) => receiver.progress(&response_body),
                 None => receiver.fail(),
@@ -146,14 +205,19 @@ impl HttpContext for Filter {
                 .iter()
                 .find(|action_set| action_set.conditions_apply(/* self */))
             {
-                self.handle_operation(action_set.start_flow())
+                let op = PendingOperation::SendGrpcRequest(GrpcMessageSenderOperation::new(
+                    Rc::clone(action_set),
+                    0,
+                ));
+                self.handle_operation(op)
             }
         }
         Action::Continue
     }
 
     fn on_http_response_headers(&mut self, _num_headers: usize, _end_of_stream: bool) -> Action {
-        for op in self.headers_operations.drain(..) {
+        let headers_operations = mem::take(&mut self.headers_operations);
+        for op in headers_operations {
             for (header, value) in &op.headers() {
                 self.add_http_response_header(header, value)
             }
@@ -179,7 +243,9 @@ impl Filter {
                 self.grpc_message_receiver_operation = Some(receiver_op)
             }
             no_implicit_dep::PendingOperation::AddHeaders(header_op) => {
-                self.headers_operations.push(header_op)
+                let (header_op, next) = header_op.progress();
+                self.headers_operations.push(header_op);
+                self.handle_operation(next)
             }
             no_implicit_dep::PendingOperation::Die(die_op) => self.die(die_op),
             no_implicit_dep::PendingOperation::Done() => (),
@@ -219,5 +285,19 @@ impl Filter {
             req.message(),
             req.timeout(),
         )
+    }
+
+    pub fn new(
+        context_id: u32,
+        index: Rc<ActionSetIndex>,
+        header_resolver: Rc<HeaderResolver>,
+    ) -> Self {
+        Self {
+            context_id,
+            index,
+            header_resolver,
+            grpc_message_receiver_operation: None,
+            headers_operations: Vec::default(),
+        }
     }
 }

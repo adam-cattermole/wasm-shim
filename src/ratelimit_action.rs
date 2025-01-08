@@ -1,11 +1,17 @@
 use crate::configuration::{Action, DataType, FailureMode, Service};
 use crate::data::Expression;
 use crate::data::Predicate;
-use crate::envoy::{RateLimitDescriptor, RateLimitDescriptor_Entry};
+use crate::envoy::{
+    HeaderValue, RateLimitDescriptor, RateLimitDescriptor_Entry, RateLimitResponse,
+    RateLimitResponse_Code, StatusCode,
+};
+use crate::filter::proposal_context::no_implicit_dep::{
+    EndRequestOperation, HeadersOperation, PendingOperation,
+};
 use crate::service::GrpcService;
 use cel_interpreter::Value;
 use log::error;
-use protobuf::RepeatedField;
+use protobuf::{Message, RepeatedField};
 use std::rc::Rc;
 
 #[derive(Debug)]
@@ -159,6 +165,48 @@ impl RateLimitAction {
             return None;
         }
         Some(other)
+    }
+
+    pub fn process_response(&self, msg: &[u8]) -> PendingOperation {
+        let rate_limit_response: RateLimitResponse = Message::parse_from_bytes(msg).unwrap();
+
+        match rate_limit_response {
+            RateLimitResponse {
+                overall_code: RateLimitResponse_Code::UNKNOWN,
+                ..
+            } => PendingOperation::Die(EndRequestOperation::default()),
+            RateLimitResponse {
+                overall_code: RateLimitResponse_Code::OVER_LIMIT,
+                response_headers_to_add: rl_headers,
+                ..
+            } => {
+                let response_headers = Self::get_header_vec(rl_headers);
+                PendingOperation::Die(EndRequestOperation::new(
+                    StatusCode::TooManyRequests as u32,
+                    response_headers,
+                    Some("Too Many Requests\n".to_string()),
+                ))
+            }
+            RateLimitResponse {
+                overall_code: RateLimitResponse_Code::OK,
+                response_headers_to_add: additional_headers,
+                ..
+            } => {
+                let response_headers = Self::get_header_vec(additional_headers);
+                if !response_headers.is_empty() {
+                    PendingOperation::AddHeaders(HeadersOperation::new(response_headers))
+                } else {
+                    PendingOperation::Done()
+                }
+            }
+        }
+    }
+
+    fn get_header_vec(headers: RepeatedField<HeaderValue>) -> Vec<(String, String)> {
+        headers
+            .iter()
+            .map(|header| (header.key.to_owned(), header.value.to_owned()))
+            .collect()
     }
 }
 

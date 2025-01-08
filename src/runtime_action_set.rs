@@ -60,10 +60,6 @@ impl RuntimeActionSet {
         self.route_rule_predicates.apply()
     }
 
-    pub fn start_flow(&self) -> crate::filter::proposal_context::no_implicit_dep::PendingOperation {
-        todo!("implement me!")
-    }
-
     pub fn process(&self, start: usize) -> (usize, Option<GrpcRequest>) {
         for (i, action_set) in self.runtime_actions.iter().skip(start).enumerate() {
             if let Some(msg) = action_set.process_request() {
