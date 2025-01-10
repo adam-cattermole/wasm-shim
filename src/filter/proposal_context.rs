@@ -1,6 +1,6 @@
 use crate::action_set_index::ActionSetIndex;
 use crate::filter::proposal_context::no_implicit_dep::{
-    EndRequestOperation, GrpcMessageSenderOperation, HeadersOperation, PendingOperation,
+    EndRequestOperation, GrpcMessageSenderOperation, HeadersOperation, Operation,
 };
 use crate::service::{GrpcRequest, HeaderResolver};
 use log::{debug, error, warn};
@@ -17,7 +17,7 @@ pub mod no_implicit_dep {
     use std::rc::Rc;
 
     #[allow(dead_code)]
-    pub enum PendingOperation {
+    pub enum Operation {
         SendGrpcRequest(GrpcMessageSenderOperation),
         AwaitGrpcResponse(GrpcMessageReceiverOperation),
         AddHeaders(HeadersOperation),
@@ -41,13 +41,15 @@ pub mod no_implicit_dep {
         }
 
         //todo(adam-cattermole): should this return a tuple? alternative?
-        pub fn progress(self) -> (Option<GrpcRequest>, PendingOperation) {
-            let (index, msg) = self.runtime_action_set.process(self.current_index);
+        pub fn next_grpc_request(self) -> (Option<GrpcRequest>, Operation) {
+            let (index, msg) = self
+                .runtime_action_set
+                .find_next_grpc_request(self.current_index);
             match msg {
-                None => (None, PendingOperation::Done()),
-                Some(msg) => (
-                    Some(msg),
-                    PendingOperation::AwaitGrpcResponse(GrpcMessageReceiverOperation {
+                None => (None, Operation::Done()),
+                Some(_) => (
+                    msg,
+                    Operation::AwaitGrpcResponse(GrpcMessageReceiverOperation {
                         runtime_action_set: self.runtime_action_set,
                         current_index: index,
                     }),
@@ -62,7 +64,7 @@ pub mod no_implicit_dep {
     }
 
     impl GrpcMessageReceiverOperation {
-        pub fn progress(self, msg: &[u8]) -> PendingOperation {
+        pub fn digest_grpc_response(self, msg: &[u8]) -> Operation {
             let action = self
                 .runtime_action_set
                 .runtime_actions
@@ -71,22 +73,20 @@ pub mod no_implicit_dep {
 
             let next_op = action.process_response(msg);
             match next_op {
-                PendingOperation::AddHeaders(mut op) => {
+                Operation::AddHeaders(mut op) => {
                     op.set_action_set_index(self.runtime_action_set, self.current_index);
-                    PendingOperation::AddHeaders(op)
+                    Operation::AddHeaders(op)
                 }
-                PendingOperation::Done() => {
-                    PendingOperation::SendGrpcRequest(GrpcMessageSenderOperation::new(
-                        Rc::clone(&self.runtime_action_set),
-                        self.current_index + 1,
-                    ))
-                }
+                Operation::Done() => Operation::SendGrpcRequest(GrpcMessageSenderOperation::new(
+                    self.runtime_action_set,
+                    self.current_index + 1,
+                )),
                 _ => next_op,
             }
         }
 
-        pub fn fail(self) -> PendingOperation {
-            PendingOperation::Die(EndRequestOperation::default())
+        pub fn fail(self) -> Operation {
+            Operation::Die(EndRequestOperation::default())
         }
     }
 
@@ -116,17 +116,17 @@ pub mod no_implicit_dep {
             }
         }
 
-        pub fn progress(self) -> (Self, PendingOperation) {
+        pub fn progress(&self) -> Operation {
             let next_op = match self.runtime_action_set.get() {
                 None => panic!("Invalid state, called progress without setting runtime action set"),
                 Some(runtime_action_set) => {
-                    PendingOperation::SendGrpcRequest(GrpcMessageSenderOperation::new(
+                    Operation::SendGrpcRequest(GrpcMessageSenderOperation::new(
                         Rc::clone(runtime_action_set),
                         self.current_index + 1,
                     ))
                 }
             };
-            (self, next_op)
+            next_op
         }
 
         pub fn headers(self) -> Vec<(String, String)> {
@@ -154,7 +154,7 @@ pub mod no_implicit_dep {
         }
 
         // todo(adam-cattermole): perhaps we should be more explicit with a different function?
-        //  Default Die is with 500 Internal Server Error.
+        // Default Die is with 500 Internal Server Error.
         pub fn default() -> Self {
             Self::new(
                 500,
@@ -191,7 +191,7 @@ impl Context for Filter {
             .expect("We need an operation pending a gRPC response");
         let next = if status_code == Status::Ok as u32 {
             match self.get_grpc_call_response_body(0, resp_size) {
-                Some(response_body) => receiver.progress(&response_body),
+                Some(response_body) => receiver.digest_grpc_response(&response_body),
                 None => receiver.fail(),
             }
         } else {
@@ -211,7 +211,7 @@ impl HttpContext for Filter {
                 .iter()
                 .find(|action_set| action_set.conditions_apply(/* self */))
             {
-                let op = PendingOperation::SendGrpcRequest(GrpcMessageSenderOperation::new(
+                let op = Operation::SendGrpcRequest(GrpcMessageSenderOperation::new(
                     Rc::clone(action_set),
                     0,
                 ));
@@ -233,11 +233,11 @@ impl HttpContext for Filter {
 }
 
 impl Filter {
-    fn handle_operation(&mut self, operation: PendingOperation) -> Action {
+    fn handle_operation(&mut self, operation: Operation) -> Action {
         match operation {
-            PendingOperation::SendGrpcRequest(sender_op) => {
+            Operation::SendGrpcRequest(sender_op) => {
                 debug!("handle_operation: SendGrpcRequest");
-                let (msg, op) = sender_op.progress();
+                let (msg, op) = sender_op.next_grpc_request();
                 match msg {
                     None => self.handle_operation(op),
                     Some(m) => match self.send_grpc_request(m) {
@@ -246,23 +246,23 @@ impl Filter {
                     },
                 }
             }
-            PendingOperation::AwaitGrpcResponse(receiver_op) => {
+            Operation::AwaitGrpcResponse(receiver_op) => {
                 debug!("handle_operation: AwaitGrpcResponse");
                 self.grpc_message_receiver_operation = Some(receiver_op);
                 Action::Pause
             }
-            PendingOperation::AddHeaders(header_op) => {
+            Operation::AddHeaders(header_op) => {
                 debug!("handle_operation: AddHeaders");
-                let (header_op, next) = header_op.progress();
+                let next = header_op.progress();
                 self.headers_operations.push(header_op);
                 self.handle_operation(next)
             }
-            PendingOperation::Die(die_op) => {
+            Operation::Die(die_op) => {
                 debug!("handle_operation: Die");
                 self.die(die_op);
                 Action::Continue
             }
-            PendingOperation::Done() => {
+            Operation::Done() => {
                 debug!("handle_operation: Done");
                 self.resume_http_request();
                 Action::Continue

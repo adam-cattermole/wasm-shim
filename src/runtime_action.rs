@@ -1,11 +1,13 @@
 use crate::auth_action::AuthAction;
 use crate::configuration::{Action, FailureMode, Service, ServiceType};
-use crate::filter::proposal_context::no_implicit_dep::PendingOperation;
+use crate::envoy::{CheckResponse, RateLimitResponse};
+use crate::filter::proposal_context::no_implicit_dep::Operation;
 use crate::ratelimit_action::RateLimitAction;
 use crate::service::auth::AuthService;
 use crate::service::rate_limit::RateLimitService;
 use crate::service::GrpcService;
 use log::debug;
+use protobuf::Message;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
@@ -76,10 +78,18 @@ impl RuntimeAction {
         }
     }
 
-    pub fn process_response(&self, msg: &[u8]) -> PendingOperation {
+    pub fn process_response(&self, msg: &[u8]) -> Operation {
         match self {
-            Self::Auth(auth_action) => auth_action.process_response(msg),
-            Self::RateLimit(rl_action) => rl_action.process_response(msg),
+            Self::Auth(auth_action) => {
+                // todo(adam-cattermole):unwrap
+                let check_response: CheckResponse = Message::parse_from_bytes(msg).unwrap();
+                auth_action.process_response(check_response)
+            }
+            Self::RateLimit(rl_action) => {
+                let rate_limit_response: RateLimitResponse =
+                    Message::parse_from_bytes(msg).unwrap();
+                rl_action.process_response(rate_limit_response)
+            }
         }
     }
 

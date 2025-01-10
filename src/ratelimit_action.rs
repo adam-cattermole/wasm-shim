@@ -6,7 +6,7 @@ use crate::envoy::{
     RateLimitResponse_Code, StatusCode,
 };
 use crate::filter::proposal_context::no_implicit_dep::{
-    EndRequestOperation, HeadersOperation, PendingOperation,
+    EndRequestOperation, HeadersOperation, Operation,
 };
 use crate::service::GrpcService;
 use cel_interpreter::Value;
@@ -167,16 +167,14 @@ impl RateLimitAction {
         Some(other)
     }
 
-    pub fn process_response(&self, msg: &[u8]) -> PendingOperation {
-        let rate_limit_response: RateLimitResponse = Message::parse_from_bytes(msg).unwrap();
-
+    pub fn process_response(&self, rate_limit_response: RateLimitResponse) -> Operation {
         match rate_limit_response {
             RateLimitResponse {
                 overall_code: RateLimitResponse_Code::UNKNOWN,
                 ..
             } => {
                 debug!("process_response_rl: received UNKNOWN response");
-                PendingOperation::Die(EndRequestOperation::default())
+                Operation::Die(EndRequestOperation::default())
             }
             RateLimitResponse {
                 overall_code: RateLimitResponse_Code::OVER_LIMIT,
@@ -185,7 +183,7 @@ impl RateLimitAction {
             } => {
                 debug!("process_response_rl: received OVER_LIMIT response");
                 let response_headers = Self::get_header_vec(rl_headers);
-                PendingOperation::Die(EndRequestOperation::new(
+                Operation::Die(EndRequestOperation::new(
                     StatusCode::TooManyRequests as u32,
                     response_headers,
                     Some("Too Many Requests\n".to_string()),
@@ -199,9 +197,9 @@ impl RateLimitAction {
                 debug!("process_response_rl: received OK response");
                 let response_headers = Self::get_header_vec(additional_headers);
                 if response_headers.is_empty() {
-                    PendingOperation::Done()
+                    Operation::Done()
                 } else {
-                    PendingOperation::AddHeaders(HeadersOperation::new(response_headers))
+                    Operation::AddHeaders(HeadersOperation::new(response_headers))
                 }
             }
         }

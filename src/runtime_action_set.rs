@@ -60,7 +60,7 @@ impl RuntimeActionSet {
         self.route_rule_predicates.apply()
     }
 
-    pub fn process(&self, start: usize) -> (usize, Option<GrpcRequest>) {
+    pub fn find_next_grpc_request(&self, start: usize) -> (usize, Option<GrpcRequest>) {
         for (i, action_set) in self.runtime_actions.iter().skip(start).enumerate() {
             if let Some(msg) = action_set.process_request() {
                 return (start + i, Some(msg));
