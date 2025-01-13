@@ -1,5 +1,6 @@
 use crate::configuration::{ActionSet, Service};
 use crate::data::{Predicate, PredicateVec};
+use crate::filter::proposal_context::no_implicit_dep::{HeadersOperation, Operation};
 use crate::runtime_action::RuntimeAction;
 use crate::service::GrpcRequest;
 use std::collections::HashMap;
@@ -67,6 +68,19 @@ impl RuntimeActionSet {
             }
         }
         (start, None)
+    }
+
+    pub fn process_grpc_response(&self, index: usize, msg: &[u8]) -> (usize, Operation) {
+        let response = self.runtime_actions[index].process_response(msg);
+        // todo: LETS CHANGE THE LOGIC HERE, DONE MEANS DONE!
+        //  THE ACTION_SET WILL KEEP GOING UNTIL WE HAVE TO DO SOMETHING
+        match response {
+            Ok(headers) => match headers {
+                None => (index, Operation::Done()),
+                Some(h) => (index, Operation::AddHeaders(HeadersOperation::new(h))),
+            },
+            Err(grpc_err_response) => (index, Operation::Die(grpc_err_response)),
+        }
     }
 }
 

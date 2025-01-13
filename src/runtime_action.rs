@@ -78,26 +78,22 @@ impl RuntimeAction {
         }
     }
 
-    pub fn process_response(&self, msg: &[u8]) -> Operation {
-        let result = match self {
+    pub fn process_response(
+        &self,
+        msg: &[u8],
+    ) -> Result<Option<Vec<(String, String)>>, GrpcErrResponse> {
+        match self {
             Self::Auth(auth_action) => {
-                // todo(adam-cattermole):unwrap
-                let check_response: CheckResponse = Message::parse_from_bytes(msg).unwrap();
+                // todo(adam-cattermole): should this expect be here?
+                let check_response: CheckResponse =
+                    Message::parse_from_bytes(msg).expect("invalid state!");
                 auth_action.process_response(check_response)
             }
             Self::RateLimit(rl_action) => {
                 let rate_limit_response: RateLimitResponse =
-                    Message::parse_from_bytes(msg).unwrap();
+                    Message::parse_from_bytes(msg).expect("invalid state!");
                 rl_action.process_response(rate_limit_response)
             }
-        };
-
-        match result {
-            Ok(headers) => match headers {
-                None => Operation::Done(),
-                Some(h) => Operation::AddHeaders(HeadersOperation::new(h)),
-            },
-            Err(grpc_err_response) => Operation::Die(grpc_err_response),
         }
     }
 

@@ -65,23 +65,19 @@ pub mod no_implicit_dep {
 
     impl GrpcMessageReceiverOperation {
         pub fn digest_grpc_response(self, msg: &[u8]) -> Operation {
-            let action = self
+            let (index, operation) = self
                 .runtime_action_set
-                .runtime_actions
-                .get(self.current_index)
-                .unwrap();
-
-            let next_op = action.process_response(msg);
-            match next_op {
+                .process_grpc_response(self.current_index, msg);
+            match operation {
                 Operation::AddHeaders(mut op) => {
-                    op.set_action_set_index(self.runtime_action_set, self.current_index);
+                    op.set_action_set_index(self.runtime_action_set, index);
                     Operation::AddHeaders(op)
                 }
                 Operation::Done() => Operation::SendGrpcRequest(GrpcMessageSenderOperation::new(
                     self.runtime_action_set,
-                    self.current_index + 1,
+                    index + 1,
                 )),
-                _ => next_op,
+                _ => operation,
             }
         }
 
