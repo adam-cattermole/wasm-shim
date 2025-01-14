@@ -1,7 +1,6 @@
 use crate::auth_action::AuthAction;
 use crate::configuration::{Action, FailureMode, Service, ServiceType};
 use crate::envoy::{CheckResponse, RateLimitResponse};
-use crate::filter::proposal_context::no_implicit_dep::{HeadersOperation, Operation};
 use crate::ratelimit_action::RateLimitAction;
 use crate::service::auth::AuthService;
 use crate::service::rate_limit::RateLimitService;
@@ -70,11 +69,14 @@ impl RuntimeAction {
         Some(other)
     }
 
-    pub fn process_request(&self) -> Option<crate::service::GrpcRequest> {
+    pub fn process_request(&self, index: usize) -> Option<crate::service::GrpcRequestAction> {
         if !self.conditions_apply() {
             None
         } else {
-            Some(self.grpc_service().build_request(self.build_message()))
+            Some(
+                self.grpc_service()
+                    .build_request(index, self.build_message()),
+            )
         }
     }
 

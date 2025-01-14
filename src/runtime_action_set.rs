@@ -1,8 +1,7 @@
 use crate::configuration::{ActionSet, Service};
 use crate::data::{Predicate, PredicateVec};
-use crate::filter::proposal_context::no_implicit_dep::{HeadersOperation, Operation};
 use crate::runtime_action::RuntimeAction;
-use crate::service::GrpcRequest;
+use crate::service::{GrpcErrResponse, GrpcRequestAction};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -61,26 +60,29 @@ impl RuntimeActionSet {
         self.route_rule_predicates.apply()
     }
 
-    pub fn find_next_grpc_request(&self, start: usize) -> (usize, Option<GrpcRequest>) {
-        for (i, action_set) in self.runtime_actions.iter().skip(start).enumerate() {
-            if let Some(msg) = action_set.process_request() {
-                return (start + i, Some(msg));
-            }
-        }
-        (start, None)
+    pub fn start_flow(&self) -> Option<GrpcRequestAction> {
+        self.find_next_grpc_request(0)
     }
 
-    pub fn process_grpc_response(&self, index: usize, msg: &[u8]) -> (usize, Operation) {
-        let response = self.runtime_actions[index].process_response(msg);
-        // todo: LETS CHANGE THE LOGIC HERE, DONE MEANS DONE!
-        //  THE ACTION_SET WILL KEEP GOING UNTIL WE HAVE TO DO SOMETHING
-        match response {
-            Ok(headers) => match headers {
-                None => (index, Operation::Done()),
-                Some(h) => (index, Operation::AddHeaders(HeadersOperation::new(h))),
-            },
-            Err(grpc_err_response) => (index, Operation::Die(grpc_err_response)),
-        }
+    fn find_next_grpc_request(&self, start: usize) -> Option<GrpcRequestAction> {
+        self.runtime_actions
+            .iter()
+            .skip(start)
+            .enumerate()
+            .find_map(|(i, action)| action.process_request(start + i))
+    }
+
+    pub fn process_grpc_response(
+        &self,
+        index: usize,
+        msg: &[u8],
+    ) -> Result<(Option<GrpcRequestAction>, Option<Vec<(String, String)>>), GrpcErrResponse> {
+        self.runtime_actions[index]
+            .process_response(msg)
+            .map(|headers| {
+                let next_msg = self.find_next_grpc_request(index + 1);
+                (next_msg, headers)
+            })
     }
 }
 
