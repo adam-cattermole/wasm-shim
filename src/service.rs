@@ -55,9 +55,8 @@ impl GrpcService {
     fn method(&self) -> &str {
         self.method
     }
-    pub fn build_request(&self, index: usize, message: Option<Vec<u8>>) -> GrpcRequestAction {
-        GrpcRequestAction::new(
-            index,
+    pub fn build_request(&self, message: Option<Vec<u8>>) -> GrpcRequest {
+        GrpcRequest::new(
             self.endpoint(),
             self.name(),
             self.method(),
@@ -67,9 +66,27 @@ impl GrpcService {
     }
 }
 
-// GrpcRequest contains the information required to make a Grpc Call
-pub struct GrpcRequestAction {
+pub struct IndexedGrpcRequest {
     index: usize,
+    request: GrpcRequest,
+}
+
+impl IndexedGrpcRequest {
+    pub(crate) fn new(index: usize, request: GrpcRequest) -> Self {
+        Self { index, request }
+    }
+
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    pub fn request(self) -> GrpcRequest {
+        self.request
+    }
+}
+
+// GrpcRequest contains the information required to make a Grpc Call
+pub struct GrpcRequest {
     upstream_name: String,
     service_name: String,
     method_name: String,
@@ -77,9 +94,8 @@ pub struct GrpcRequestAction {
     message: Option<Vec<u8>>,
 }
 
-impl GrpcRequestAction {
+impl GrpcRequest {
     pub fn new(
-        index: usize,
         upstream_name: &str,
         service_name: &str,
         method_name: &str,
@@ -87,17 +103,12 @@ impl GrpcRequestAction {
         message: Option<Vec<u8>>,
     ) -> Self {
         Self {
-            index,
             upstream_name: upstream_name.to_owned(),
             service_name: service_name.to_owned(),
             method_name: method_name.to_owned(),
             timeout,
             message,
         }
-    }
-
-    pub fn index(&self) -> usize {
-        self.index
     }
 
     pub fn upstream_name(&self) -> &str {

@@ -69,14 +69,11 @@ impl RuntimeAction {
         Some(other)
     }
 
-    pub fn process_request(&self, index: usize) -> Option<crate::service::GrpcRequestAction> {
+    pub fn process_request(&self) -> Option<crate::service::GrpcRequest> {
         if !self.conditions_apply() {
             None
         } else {
-            Some(
-                self.grpc_service()
-                    .build_request(index, self.build_message()),
-            )
+            Some(self.grpc_service().build_request(self.build_message()))
         }
     }
 
