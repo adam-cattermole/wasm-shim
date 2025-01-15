@@ -2,7 +2,6 @@ use crate::action_set_index::ActionSetIndex;
 use crate::filter::proposal_context::no_implicit_dep::{
     GrpcMessageReceiverOperation, GrpcMessageSenderOperation, HeadersOperation, Operation,
 };
-use crate::runtime_action_set::RuntimeActionSet;
 use crate::service::{GrpcErrResponse, GrpcRequest, HeaderResolver};
 use log::{debug, warn};
 use proxy_wasm::traits::{Context, HttpContext};
@@ -33,26 +32,23 @@ pub mod no_implicit_dep {
     impl GrpcMessageSenderOperation {
         pub fn new(
             runtime_action_set: Rc<RuntimeActionSet>,
-            grpc_request: IndexedGrpcRequest,
+            indexed_request: IndexedGrpcRequest,
         ) -> Self {
             Self {
                 runtime_action_set,
-                grpc_request,
+                grpc_request: indexed_request,
             }
         }
 
-        // todo(adam-cattermole): perhaps we should merge these three, return all
-        //  but consume self? this avoids the ordering of usage
-        pub fn runtime_action_set(&self) -> Rc<RuntimeActionSet> {
-            Rc::clone(&self.runtime_action_set)
-        }
-
-        pub fn current_index(&self) -> usize {
-            self.grpc_request.index()
-        }
-
-        pub fn grpc_request(self) -> GrpcRequest {
-            self.grpc_request.request()
+        pub fn build_receiver_operation(self) -> (GrpcRequest, Operation) {
+            let index = self.grpc_request.index();
+            (
+                self.grpc_request.request(),
+                Operation::AwaitGrpcResponse(GrpcMessageReceiverOperation::new(
+                    self.runtime_action_set,
+                    index,
+                )),
+            )
         }
     }
 
@@ -130,20 +126,16 @@ impl Context for Filter {
         let receiver = mem::take(&mut self.grpc_message_receiver_operation)
             .expect("We need an operation pending a gRPC response");
 
+        let mut ops = Vec::new();
+
         if status_code != Status::Ok as u32 {
-            self.handle_operation(receiver.fail());
-            return;
+            ops.push(receiver.fail());
+        } else if let Some(response_body) = self.get_grpc_call_response_body(0, resp_size) {
+            ops.extend(receiver.digest_grpc_response(&response_body));
+        } else {
+            ops.push(receiver.fail());
         }
 
-        let response_body = match self.get_grpc_call_response_body(0, resp_size) {
-            Some(body) => body,
-            None => {
-                self.handle_operation(receiver.fail());
-                return;
-            }
-        };
-
-        let ops = receiver.digest_grpc_response(&response_body);
         ops.into_iter().for_each(|op| {
             self.handle_operation(op);
         })
@@ -190,13 +182,13 @@ impl Filter {
             Operation::SendGrpcRequest(sender_op) => {
                 debug!("handle_operation: SendGrpcRequest");
                 let next_op = {
-                    let index = sender_op.current_index();
-                    let action_set = sender_op.runtime_action_set();
-                    match self.send_grpc_request(sender_op.grpc_request()) {
-                        Ok(_token) => Operation::AwaitGrpcResponse(
-                            GrpcMessageReceiverOperation::new(action_set, index),
-                        ),
-                        Err(_status) => panic!("Error sending request"),
+                    let (req, receiver_op) = sender_op.build_receiver_operation();
+                    match self.send_grpc_request(req) {
+                        Ok(_token) => receiver_op,
+                        Err(status) => {
+                            debug!("handle_operation: failed to send grpc request `{status:?}`");
+                            Operation::Die(GrpcErrResponse::new_internal_server_error())
+                        }
                     }
                 };
                 self.handle_operation(next_op)
