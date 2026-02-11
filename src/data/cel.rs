@@ -511,23 +511,37 @@ pub fn known_attribute_for(path: &Path) -> Option<Attribute> {
 fn json_to_cel(json: &str) -> Value {
     let json_value: Result<JsonValue, _> = serde_json::from_str(json);
     match json_value {
-        Ok(json) => match json {
-            JsonValue::Null => Value::Null,
-            JsonValue::Bool(b) => b.into(),
-            #[allow(clippy::expect_used)]
-            JsonValue::Number(n) => {
-                if n.is_u64() {
-                    n.as_u64().expect("Unreachable: number must be u64").into()
-                } else if n.is_i64() {
-                    n.as_i64().expect("Unreachable: number must be i64").into()
-                } else {
-                    n.as_f64().expect("Unreachable: number must be f64").into()
-                }
-            }
-            JsonValue::String(str) => str.into(),
-            _ => todo!("Need support for more Json!"),
-        },
+        Ok(json) => json_value_to_cel(&json),
         _ => json.into(),
+    }
+}
+
+fn json_value_to_cel(json: &JsonValue) -> Value {
+    match json {
+        JsonValue::Null => Value::Null,
+        JsonValue::Bool(b) => (*b).into(),
+        #[allow(clippy::expect_used)]
+        JsonValue::Number(n) => {
+            if n.is_u64() {
+                n.as_u64().expect("Unreachable: number must be u64").into()
+            } else if n.is_i64() {
+                n.as_i64().expect("Unreachable: number must be i64").into()
+            } else {
+                n.as_f64().expect("Unreachable: number must be f64").into()
+            }
+        }
+        JsonValue::String(str) => str.as_str().into(),
+        JsonValue::Array(arr) => {
+            let cel_list: Vec<Value> = arr.iter().map(json_value_to_cel).collect();
+            cel_list.into()
+        }
+        JsonValue::Object(obj) => {
+            let cel_map: HashMap<Key, Value> = obj
+                .iter()
+                .map(|(k, v)| (Key::String(k.clone().into()), json_value_to_cel(v)))
+                .collect();
+            Value::Map(cel_map.into())
+        }
     }
 }
 
