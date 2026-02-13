@@ -368,10 +368,10 @@ impl ReqRespCtx {
     fn get_tracing_headers(&self) -> Vec<(String, Vec<u8>)> {
         let mut headers = Vec::new();
 
-        let context = if tracing::Span::current().is_none() {
-            &self.tracing.otel_context
-        } else {
+        let context = if self.tracing.request_span_guard.is_some() {
             &tracing::Span::current().context()
+        } else {
+            &self.tracing.otel_context
         };
 
         opentelemetry::global::get_text_map_propagator(|propagator| {
