@@ -254,6 +254,32 @@ fn from_envoy_headers(headers: &[HeaderValueOption]) -> Headers {
     vec.into()
 }
 
+fn convert_protobuf_value_to_json(value: &prost_types::Value) -> serde_json::Value {
+    match &value.kind {
+        Some(Kind::StringValue(s)) => serde_json::Value::String(s.clone()),
+        Some(Kind::BoolValue(b)) => serde_json::Value::Bool(*b),
+        Some(Kind::NullValue(_)) => serde_json::Value::Null,
+        Some(Kind::NumberValue(n)) => serde_json::json!(n),
+        Some(Kind::ListValue(list)) => {
+            let values: Vec<serde_json::Value> = list
+                .values
+                .iter()
+                .map(convert_protobuf_value_to_json)
+                .collect();
+            serde_json::Value::Array(values)
+        }
+        Some(Kind::StructValue(s)) => {
+            let map: serde_json::Map<String, serde_json::Value> = s
+                .fields
+                .iter()
+                .map(|(k, v)| (k.clone(), convert_protobuf_value_to_json(v)))
+                .collect();
+            serde_json::Value::Object(map)
+        }
+        None => serde_json::Value::Null,
+    }
+}
+
 fn process_metadata(s: &prost_types::Struct, prefix: String) -> Vec<(String, Vec<u8>)> {
     let mut result = Vec::new();
 
@@ -264,23 +290,11 @@ fn process_metadata(s: &prost_types::Struct, prefix: String) -> Vec<(String, Vec
             Some(Kind::StructValue(nested_struct)) => {
                 result.extend(process_metadata(nested_struct, current_path));
             }
-            Some(kind) => {
-                let json = match kind {
-                    Kind::StringValue(s) => Some(serde_json::Value::String(s.clone())),
-                    Kind::BoolValue(b) => Some(serde_json::Value::Bool(*b)),
-                    Kind::NullValue(_) => Some(serde_json::Value::Null),
-                    Kind::NumberValue(n) => Some(serde_json::json!(n)),
-                    Kind::StructValue(_) => unreachable!(),
-                    _ => {
-                        warn!("Unknown Struct field kind for key {}: {:?}", key, kind);
-                        None
-                    }
-                };
-
-                if let Some(v) = json {
-                    if let Ok(serialized) = serde_json::to_string(&v) {
-                        result.push((current_path, serialized.into_bytes()));
-                    }
+            // For other types, convert to JSON and store as single value
+            Some(_) => {
+                let json = convert_protobuf_value_to_json(value);
+                if let Ok(serialized) = serde_json::to_string(&json) {
+                    result.push((current_path, serialized.into_bytes()));
                 }
             }
             None => {
