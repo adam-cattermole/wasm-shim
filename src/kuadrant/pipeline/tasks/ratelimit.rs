@@ -371,7 +371,7 @@ fn process_rl_response(response: RateLimitResponse) -> TaskOutcome {
             if !response.response_headers_to_add.is_empty() {
                 let headers = from_envoy_header_value(&response.response_headers_to_add);
                 return TaskOutcome::Requeued(vec![Box::new(ModifyHeadersTask::new(
-                    HeaderOperation::Append(headers),
+                    HeaderOperation::Set(headers),
                     HeadersType::HttpResponseHeaders,
                 ))]);
             }

@@ -206,7 +206,7 @@ fn process_auth_response(response: CheckResponse) -> TaskOutcome {
             if !ok_response.headers.is_empty() {
                 let headers = from_envoy_headers(&ok_response.headers);
                 tasks.push(Box::new(ModifyHeadersTask::new(
-                    HeaderOperation::Append(headers),
+                    HeaderOperation::Set(headers),
                     HeadersType::HttpRequestHeaders,
                 )));
             }
