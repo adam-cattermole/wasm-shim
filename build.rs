@@ -94,6 +94,7 @@ fn generate_protobuf() -> Result<(), Box<dyn Error>> {
             "vendor-protobufs/data-plane-api/envoy/config/core/v3/proxy_protocol.proto",
             "vendor-protobufs/udpa/xds/core/v3/authority.proto",
             "vendor-protobufs/data-plane-api/envoy/type/tracing/v3/custom_tag.proto",
+            "vendor-protobufs/kuadrant/v1/descriptor_service.proto",
         ],
         &[
             "vendor-protobufs/data-plane-api/",
@@ -101,6 +102,7 @@ fn generate_protobuf() -> Result<(), Box<dyn Error>> {
             "vendor-protobufs/udpa/",
             "vendor-protobufs/xds/",
             "vendor-protobufs/googleapis/",
+            "vendor-protobufs/kuadrant/",
         ],
     );
 
