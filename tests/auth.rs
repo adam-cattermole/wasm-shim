@@ -572,3 +572,123 @@ fn it_does_not_fold_auth_actions() {
         .execute_and_expect(ReturnType::Action(Action::Continue))
         .unwrap();
 }
+
+#[test]
+#[serial]
+fn it_replaces_headers() {
+    let args = tester::MockSettings {
+        wasm_path: wasm_module(),
+        quiet: false,
+        allow_unexpected: false,
+    };
+    let mut module = tester::mock(args).unwrap();
+
+    module
+        .call_start()
+        .execute_and_expect(ReturnType::None)
+        .unwrap();
+
+    let root_context = 1;
+
+    module
+        .call_proxy_on_context_create(root_context, 0)
+        .expect_log(Some(LogLevel::Info), Some("#1 set_root_context"))
+        .execute_and_expect(ReturnType::None)
+        .unwrap();
+
+    module
+        .call_proxy_on_configure(root_context, 0)
+        .expect_log(Some(LogLevel::Info), Some("#1 on_configure"))
+        .expect_define_metric(Some(MetricType::Counter), Some("kuadrant.configs"))
+        .returning(Some(1))
+        .expect_define_metric(Some(MetricType::Counter), Some("kuadrant.hits"))
+        .returning(Some(2))
+        .expect_define_metric(Some(MetricType::Counter), Some("kuadrant.misses"))
+        .returning(Some(3))
+        .expect_define_metric(Some(MetricType::Counter), Some("kuadrant.allowed"))
+        .returning(Some(4))
+        .expect_define_metric(Some(MetricType::Counter), Some("kuadrant.denied"))
+        .returning(Some(5))
+        .expect_define_metric(Some(MetricType::Counter), Some("kuadrant.errors"))
+        .returning(Some(6))
+        .expect_increment_metric(Some(1), Some(1))
+        .expect_get_buffer_bytes(Some(BufferType::PluginConfiguration))
+        .returning(Some(CONFIG.as_bytes()))
+        .expect_get_log_level()
+        .returning(Some(LOG_LEVEL))
+        .execute_and_expect(ReturnType::Bool(true))
+        .unwrap();
+
+    let http_context = 2;
+    module
+        .call_proxy_on_context_create(http_context, root_context)
+        .expect_get_log_level()
+        .returning(Some(LOG_LEVEL))
+        .execute_and_expect(ReturnType::None)
+        .unwrap();
+
+    module
+        .call_proxy_on_request_headers(http_context, 0, false)
+        .expect_get_property(Some(vec!["request", "host"]))
+        .returning(Some(data::request::HOST))
+        // retrieving properties for conditions
+        .expect_get_property(Some(vec!["request", "url_path"]))
+        .returning(Some(data::request::path::ADMIN_TOY))
+        .expect_get_property(Some(vec!["request", "method"]))
+        .returning(Some(data::request::method::POST))
+        // retrieving properties for CheckRequest - includes initial Authorization header
+        .expect_get_header_map_pairs(Some(MapType::HttpRequestHeaders))
+        .returning(Some(vec![
+            ("x-request-id", "e1fc297a-a8a3-4360-8f41-af57b4a861e1"),
+            ("authorization", "Bearer initial-token"),
+        ]))
+        .expect_get_property(Some(vec!["request", "scheme"]))
+        .returning(Some(data::request::scheme::HTTP))
+        .expect_get_property(Some(vec!["request", "path"]))
+        .returning(Some(data::request::path::ADMIN_TOY))
+        .expect_get_property(Some(vec!["request", "protocol"]))
+        .returning(Some(data::request::protocol::HTTP_1_1))
+        .expect_get_property(Some(vec!["request", "time"]))
+        .returning(Some(data::request::TIME))
+        .expect_get_property(Some(vec!["destination", "address"]))
+        .returning(Some(data::destination::ADDRESS))
+        .expect_get_property(Some(vec!["destination", "port"]))
+        .returning(Some(data::destination::port::P_8000))
+        .expect_get_property(Some(vec!["source", "address"]))
+        .returning(Some(data::source::ADDRESS))
+        .expect_get_property(Some(vec!["source", "port"]))
+        .returning(Some(data::source::port::P_45000))
+        .expect_increment_metric(Some(2), Some(1))
+        .expect_grpc_call(
+            Some("authorino-cluster"),
+            Some("envoy.service.auth.v3.Authorization"),
+            Some("Check"),
+            None,
+            None,
+            Some(5000),
+        )
+        .returning(Ok(42))
+        .execute_and_expect(ReturnType::Action(Action::Pause))
+        .unwrap();
+
+    let grpc_response = data::auth_response::WITH_AUTHORIZATION_HEADER;
+    module
+        .call_proxy_on_grpc_receive(http_context, 42, grpc_response.len() as i32)
+        .expect_get_buffer_bytes(Some(BufferType::GrpcReceiveBuffer))
+        .returning(Some(grpc_response))
+        .expect_set_header_map_pairs(
+            Some(MapType::HttpRequestHeaders),
+            Some(vec![
+                ("x-request-id", "e1fc297a-a8a3-4360-8f41-af57b4a861e1"),
+                ("authorization", "Bearer replaced-token"),
+            ]),
+        )
+        .execute_and_expect(ReturnType::None)
+        .unwrap();
+
+    module
+        .call_proxy_on_response_headers(http_context, 0, false)
+        .expect_increment_metric(Some(4), Some(1))
+        .execute_and_expect(ReturnType::Action(Action::Continue))
+        .unwrap();
+}

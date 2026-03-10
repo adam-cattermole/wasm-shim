@@ -151,4 +151,19 @@ pub mod auth_response {
         0x0a, 0x09, 0x1a, 0x07, 0x70, 0x72, 0x65, 0x6d, 0x69, 0x75, 0x6d, 0x0a, 0x11, 0x0a, 0x06,
         0x75, 0x73, 0x65, 0x72, 0x69, 0x64, 0x12, 0x07, 0x1a, 0x05, 0x61, 0x6c, 0x69, 0x63, 0x65,
     ];
+
+    /// CheckResponse with OkHttpResponse containing authorization header
+    /// CheckResponse {
+    ///   status: { code: 0 }
+    ///   ok_response: OkHttpResponse {
+    ///     headers: [HeaderValueOption {
+    ///       header: HeaderValue { key: "authorization", value: "Bearer replaced-token" }
+    ///     }]
+    ///   }
+    /// }
+    pub const WITH_AUTHORIZATION_HEADER: &[u8] = &[
+        10, 0, 26, 42, 18, 40, 10, 38, 10, 13, 97, 117, 116, 104, 111, 114, 105, 122, 97, 116, 105,
+        111, 110, 18, 21, 66, 101, 97, 114, 101, 114, 32, 114, 101, 112, 108, 97, 99, 101, 100, 45,
+        116, 111, 107, 101, 110,
+    ];
 }
