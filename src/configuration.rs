@@ -115,6 +115,25 @@ pub struct PluginConfiguration {
     pub action_sets: Vec<ActionSet>,
     #[serde(default)]
     pub observability: Observability,
+    #[serde(default = "default_descriptor_service")]
+    pub descriptor_service: String,
+}
+
+fn default_descriptor_service() -> String {
+    "kuadrant-operator-grpc".to_string()
+}
+
+impl PluginConfiguration {
+    #[cfg(test)]
+    pub fn new(services: HashMap<String, Service>, action_sets: Vec<ActionSet>) -> Self {
+        Self {
+            request_data: HashMap::new(),
+            services,
+            action_sets,
+            observability: Default::default(),
+            descriptor_service: default_descriptor_service(),
+        }
+    }
 }
 
 #[derive(Deserialize, Debug, Clone, Default, PartialEq)]

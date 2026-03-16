@@ -274,10 +274,9 @@ mod tests {
             },
         );
 
-        PluginConfiguration {
-            request_data: HashMap::new(),
+        PluginConfiguration::new(
             services,
-            action_sets: vec![ActionSet {
+            vec![ActionSet {
                 name: "test-action-set".to_string(),
                 route_rule_conditions: RouteRuleConditions {
                     hostnames,
@@ -291,8 +290,7 @@ mod tests {
                     sources: vec![],
                 }],
             }],
-            observability: Default::default(),
-        }
+        )
     }
 
     #[test]
@@ -345,10 +343,9 @@ mod tests {
             },
         );
 
-        let config = PluginConfiguration {
-            request_data: HashMap::new(),
+        let config = PluginConfiguration::new(
             services,
-            action_sets: vec![ActionSet {
+            vec![ActionSet {
                 name: "test-action-set".to_string(),
                 route_rule_conditions: RouteRuleConditions {
                     hostnames: vec!["example.com".to_string()],
@@ -356,8 +353,7 @@ mod tests {
                 },
                 actions: vec![],
             }],
-            observability: Default::default(),
-        };
+        );
 
         let result = PipelineFactory::try_from(config);
         assert!(result.is_err());
@@ -582,9 +578,7 @@ mod tests {
 
         let config = PluginConfiguration {
             request_data,
-            services,
-            action_sets: vec![],
-            observability: Default::default(),
+            ..PluginConfiguration::new(services, vec![])
         };
 
         let factory = PipelineFactory::try_from(config).unwrap();
