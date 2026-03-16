@@ -3,10 +3,12 @@ use crate::kuadrant::ReqRespCtx;
 use std::{rc::Rc, time::Duration};
 
 mod auth;
+mod dynamic;
 pub mod rate_limit;
 mod tracing;
 
 pub use auth::AuthService;
+pub use dynamic::DynamicService;
 pub use rate_limit::RateLimitService;
 pub use tracing::TracingService;
 
@@ -17,6 +19,7 @@ pub enum ServiceInstance {
     RateLimitCheck(Rc<RateLimitService>),
     RateLimitReport(Rc<RateLimitService>),
     Tracing(Option<Rc<TracingService>>),
+    Dynamic(Rc<DynamicService>),
 }
 
 impl ServiceInstance {
@@ -27,6 +30,7 @@ impl ServiceInstance {
             ServiceInstance::RateLimitCheck(service) => service.failure_mode(),
             ServiceInstance::RateLimitReport(service) => service.failure_mode(),
             ServiceInstance::Tracing(_) => FailureMode::Allow,
+            ServiceInstance::Dynamic(service) => service.failure_mode(),
         }
     }
 }

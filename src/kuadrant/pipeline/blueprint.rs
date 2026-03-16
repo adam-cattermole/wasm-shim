@@ -251,6 +251,9 @@ impl Blueprint {
                             .push(Box::new(ExportTracesTask::new(ctx, Rc::clone(service))));
                     }
                 }
+                ServiceInstance::Dynamic(_) => {
+                    unreachable!("Dynamic services cannot be instantiated without descriptor pools")
+                }
             }
         }
 
