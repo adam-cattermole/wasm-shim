@@ -90,6 +90,7 @@ pub enum ServiceType {
     #[serde(rename = "ratelimit-report")]
     RateLimitReport,
     Tracing,
+    Dynamic,
 }
 
 #[derive(Deserialize, Debug, Clone, Default)]
@@ -126,6 +127,8 @@ pub struct Service {
     pub failure_mode: FailureMode,
     #[serde(default)]
     pub timeout: Timeout,
+    pub grpc_service: Option<String>,
+    pub grpc_method: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -526,5 +529,46 @@ mod test {
         }"#;
         let res = serde_json::from_str::<PluginConfiguration>(bad_config);
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn parse_dynamic_service_config() {
+        let config = r#"{
+            "services": {
+                "limitador-dynamic": {
+                    "type": "dynamic",
+                    "endpoint": "limitador-cluster",
+                    "failureMode": "deny",
+                    "timeout": "1s",
+                    "grpcService": "envoy.service.ratelimit.v3.RateLimitService",
+                    "grpcMethod": "ShouldRateLimit"
+                }
+            },
+            "actionSets": []
+        }"#;
+
+        let res = serde_json::from_str::<PluginConfiguration>(config);
+        if let Err(ref e) = res {
+            eprintln!("{e}");
+        }
+        assert!(res.is_ok());
+
+        let plugin_config = res.expect("result is ok");
+        let dynamic_service = plugin_config
+            .services
+            .get("limitador-dynamic")
+            .expect("dynamic service to be set");
+
+        assert_eq!(dynamic_service.service_type, ServiceType::Dynamic);
+        assert_eq!(dynamic_service.endpoint, "limitador-cluster");
+        assert_eq!(dynamic_service.failure_mode, FailureMode::Deny);
+        assert_eq!(
+            dynamic_service.grpc_service.as_ref(),
+            Some(&"envoy.service.ratelimit.v3.RateLimitService".to_string())
+        );
+        assert_eq!(
+            dynamic_service.grpc_method.as_ref(),
+            Some(&"ShouldRateLimit".to_string())
+        );
     }
 }

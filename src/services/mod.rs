@@ -92,6 +92,9 @@ impl TryFrom<ServiceConfig> for ServiceInstance {
             ServiceType::Tracing => Ok(ServiceInstance::Tracing(Some(Rc::new(
                 TracingService::new(service.endpoint, service.timeout.0),
             )))),
+            ServiceType::Dynamic => Err(ServiceError::Dispatch(
+                "Dynamic services cannot be created through TryFrom".to_string(),
+            )),
         }
     }
 }

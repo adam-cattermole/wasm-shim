@@ -269,6 +269,8 @@ mod tests {
                 endpoint: "test-cluster".to_string(),
                 failure_mode: FailureMode::Deny,
                 timeout: Timeout::default(),
+                grpc_service: None,
+                grpc_method: None,
             },
         );
 
@@ -338,6 +340,8 @@ mod tests {
                 endpoint: "test-cluster".to_string(),
                 failure_mode: FailureMode::Deny,
                 timeout: Timeout::default(),
+                grpc_service: None,
+                grpc_method: None,
             },
         );
 
@@ -565,6 +569,8 @@ mod tests {
                 endpoint: "test-cluster".to_string(),
                 failure_mode: FailureMode::Deny,
                 timeout: Timeout::default(),
+                grpc_service: None,
+                grpc_method: None,
             },
         );
 
