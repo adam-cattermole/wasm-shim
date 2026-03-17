@@ -1,36 +1,29 @@
 use super::kuadrant_filter::KuadrantFilter;
 use crate::configuration::PluginConfiguration;
+use crate::envoy::kuadrant::v1::{
+    GetServiceDescriptorsRequest, GetServiceDescriptorsResponse, ServiceRef,
+};
 use crate::kuadrant::PipelineFactory;
 use crate::metrics::METRICS;
 use crate::{WASM_SHIM_FEATURES, WASM_SHIM_GIT_HASH, WASM_SHIM_PROFILE, WASM_SHIM_VERSION};
 use const_format::formatcp;
+use prost::Message;
 use prost_reflect::DescriptorPool;
+use prost_types::FileDescriptorSet;
 use proxy_wasm::traits::{Context, HttpContext, RootContext};
 use proxy_wasm::types::ContextType;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::time::Duration;
 use tracing::{debug, error, info};
 
 const WASM_SHIM_HEADER: &str = "Kuadrant wasm module";
 
-pub enum ConfigState {
-    Ready,
-    AwaitingDescriptors {
-        config: PluginConfiguration,
-        pending_token: u32,
-    },
-}
-
-impl Default for ConfigState {
-    fn default() -> Self {
-        ConfigState::Ready
-    }
-}
-
 pub struct FilterRoot {
     pub context_id: u32,
     pub pipeline_factory: Rc<PipelineFactory>,
-    config_state: ConfigState,
+    pending_requests: HashMap<u32, HashSet<(String, String)>>,
+    pending_config: Option<PluginConfiguration>,
     descriptor_cache: HashMap<(String, String), DescriptorPool>,
 }
 
@@ -39,9 +32,169 @@ impl FilterRoot {
         Self {
             context_id,
             pipeline_factory: Rc::new(PipelineFactory::default()),
-            config_state: ConfigState::default(),
+            pending_requests: HashMap::new(),
+            pending_config: None,
             descriptor_cache: HashMap::new(),
         }
+    }
+
+    fn fetch_descriptors(
+        &mut self,
+        descriptor_service: &str,
+        services: Vec<(String, String)>,
+    ) -> Result<u32, String> {
+        debug!(
+            "Configuration requires descriptors for dynamic services: {:?}",
+            services
+        );
+
+        let request = GetServiceDescriptorsRequest {
+            services: services
+                .iter()
+                .map(|(cluster_name, service)| ServiceRef {
+                    cluster_name: cluster_name.clone(),
+                    service: service.clone(),
+                })
+                .collect(),
+        };
+
+        let mut request_bytes = Vec::new();
+        request
+            .encode(&mut request_bytes)
+            .map_err(|e| format!("could not encode descriptor request: {}", e))?;
+
+        let token = self
+            .dispatch_grpc_call(
+                descriptor_service,
+                "kuadrant.v1.DescriptorService",
+                "GetServiceDescriptors",
+                vec![],
+                Some(&request_bytes),
+                Duration::from_secs(5),
+            )
+            .map_err(|status| format!("could not dispatch descriptor fetch: {:?}", status))?;
+
+        debug!(
+            "Configuration pending: fetching descriptors for {} services (token: {})",
+            services.len(),
+            token
+        );
+
+        Ok(token)
+    }
+
+    fn process_descriptor_response(&mut self, response_bytes: Vec<u8>) -> Result<(), String> {
+        let response = GetServiceDescriptorsResponse::decode(response_bytes.as_slice())
+            .map_err(|e| format!("could not decode descriptor response: {}", e))?;
+
+        debug!(
+            "Configuration: received {} service descriptors",
+            response.descriptors.len()
+        );
+
+        for descriptor in response.descriptors {
+            let key = (descriptor.cluster_name, descriptor.service);
+            let fds = FileDescriptorSet::decode(descriptor.file_descriptor_set.as_slice())
+                .map_err(|e| format!("could not decode FileDescriptorSet for {:?}: {}", key, e))?;
+            let pool = DescriptorPool::from_file_descriptor_set(fds)
+                .map_err(|e| format!("could not build DescriptorPool for {:?}: {}", key, e))?;
+            debug!("Configuration: cached descriptor for {:?}", key);
+            self.descriptor_cache.insert(key, pool);
+        }
+
+        Ok(())
+    }
+
+    fn activate_config(&mut self, config: PluginConfiguration) -> bool {
+        match PipelineFactory::try_from_with_descriptors(config, &self.descriptor_cache) {
+            Ok(factory) => {
+                self.pipeline_factory = Rc::new(factory);
+                true
+            }
+            Err(err) => {
+                error!("failed to compile plugin config: {:?}", err);
+                false
+            }
+        }
+    }
+
+    fn process_config(&mut self, config: PluginConfiguration) -> bool {
+        let dynamic_services = config.get_dynamic_services();
+        if dynamic_services.is_empty() {
+            return self.activate_config(config);
+        }
+
+        let missing_descriptors: Vec<_> = dynamic_services
+            .iter()
+            .filter(|key| !self.descriptor_cache.contains_key(*key))
+            .cloned()
+            .collect();
+
+        if missing_descriptors.is_empty() {
+            return self.activate_config(config);
+        }
+
+        let in_flight: HashSet<_> = self.pending_requests.values().flatten().cloned().collect();
+
+        let new_services: Vec<_> = missing_descriptors
+            .into_iter()
+            .filter(|key| !in_flight.contains(key))
+            .collect();
+
+        if !new_services.is_empty() {
+            match self.fetch_descriptors(&config.descriptor_service, new_services.clone()) {
+                Ok(token) => {
+                    self.pending_requests
+                        .insert(token, new_services.into_iter().collect());
+                }
+                Err(e) => {
+                    error!("Configuration failed: {}", e);
+                    return false;
+                }
+            }
+        }
+
+        self.pending_config = Some(config);
+        true
+    }
+
+    fn handle_descriptor_response(
+        &mut self,
+        token_id: u32,
+        status_code: u32,
+        response_size: usize,
+    ) -> Result<(), String> {
+        if self.pending_requests.remove(&token_id).is_none() {
+            debug!("Ignoring grpc response for token {}", token_id);
+            return Ok(());
+        }
+
+        if status_code != 0 {
+            return Err(format!("descriptor fetch returned status {}", status_code));
+        }
+
+        let response_bytes = self
+            .get_grpc_call_response_body(0, response_size)
+            .map_err(|status| format!("could not get descriptor response: {:?}", status))?
+            .ok_or_else(|| "descriptor response body is empty".to_string())?;
+
+        self.process_descriptor_response(response_bytes)?;
+
+        if let Some(config) = self.pending_config.take() {
+            let missing: Vec<_> = config
+                .get_dynamic_services()
+                .into_iter()
+                .filter(|key| !self.descriptor_cache.contains_key(key))
+                .collect();
+
+            if missing.is_empty() {
+                self.activate_config(config);
+            } else {
+                self.pending_config = Some(config);
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -98,41 +251,13 @@ impl RootContext for FilterRoot {
                 );
 
                 info!("plugin config parsed: {:?}", config);
-
-                let dynamic_services = config.get_dynamic_services();
-                if !dynamic_services.is_empty() {
-                    let missing_descriptors: Vec<_> = dynamic_services
-                        .iter()
-                        .filter(|key| !self.descriptor_cache.contains_key(*key))
-                        .cloned()
-                        .collect();
-
-                    if !missing_descriptors.is_empty() {
-                        // todo(@adam-cattermole): Dispatch descriptor fetch for missing descriptors
-                        error!(
-                            "Dynamic services require descriptors that are not cached: {:?}",
-                            missing_descriptors
-                        );
-                        return false;
-                    }
-                }
-
-                match PipelineFactory::try_from_with_descriptors(config, &self.descriptor_cache) {
-                    Ok(factory) => {
-                        self.pipeline_factory = Rc::new(factory);
-                    }
-                    Err(err) => {
-                        error!("failed to compile plugin config: {:?}", err);
-                        return false;
-                    }
-                }
+                self.process_config(config)
             }
             Err(e) => {
                 log::error!("failed to parse plugin config: {}", e);
-                return false;
+                false
             }
         }
-        true
     }
 
     fn get_type(&self) -> Option<ContextType> {
@@ -140,7 +265,13 @@ impl RootContext for FilterRoot {
     }
 }
 
-impl Context for FilterRoot {}
+impl Context for FilterRoot {
+    fn on_grpc_call_response(&mut self, token_id: u32, status_code: u32, response_size: usize) {
+        if let Err(e) = self.handle_descriptor_response(token_id, status_code, response_size) {
+            error!("Configuration failed: {}", e);
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
