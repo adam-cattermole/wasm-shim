@@ -1,6 +1,7 @@
 use crate::configuration::{FailureMode, Service as ServiceConfig, ServiceType};
 use crate::kuadrant::ReqRespCtx;
-use std::{rc::Rc, time::Duration};
+use prost_reflect::DescriptorPool;
+use std::{collections::HashMap, rc::Rc, time::Duration};
 
 mod auth;
 mod dynamic;
@@ -33,33 +34,11 @@ impl ServiceInstance {
             ServiceInstance::Dynamic(service) => service.failure_mode(),
         }
     }
-}
 
-#[derive(Debug)]
-pub enum ServiceError {
-    Dispatch(String),
-    Decode(String),
-    Retrieval(String),
-}
-
-impl std::fmt::Display for ServiceError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ServiceError::Dispatch(msg) => write!(f, "Failed to dispatch gRPC call: {}", msg),
-            ServiceError::Decode(msg) => write!(f, "Failed to decode response: {}", msg),
-            ServiceError::Retrieval(msg) => {
-                write!(f, "Failed to retrieve gRPC response: {}", msg)
-            }
-        }
-    }
-}
-
-impl std::error::Error for ServiceError {}
-
-impl TryFrom<ServiceConfig> for ServiceInstance {
-    type Error = ServiceError;
-
-    fn try_from(service: ServiceConfig) -> Result<Self, Self::Error> {
+    pub fn from_config(
+        service: ServiceConfig,
+        descriptor_cache: &HashMap<(String, String), DescriptorPool>,
+    ) -> Result<Self, ServiceError> {
         match service.service_type {
             ServiceType::Auth => Ok(ServiceInstance::Auth(Rc::new(AuthService::new(
                 service.endpoint,
@@ -96,10 +75,64 @@ impl TryFrom<ServiceConfig> for ServiceInstance {
             ServiceType::Tracing => Ok(ServiceInstance::Tracing(Some(Rc::new(
                 TracingService::new(service.endpoint, service.timeout.0),
             )))),
-            ServiceType::Dynamic => Err(ServiceError::Dispatch(
-                "Dynamic services cannot be created through TryFrom".to_string(),
-            )),
+            ServiceType::Dynamic => {
+                let grpc_service = service.grpc_service.as_ref().ok_or_else(|| {
+                    ServiceError::Dispatch("Missing grpc_service for Dynamic service".to_string())
+                })?;
+                let grpc_method = service.grpc_method.as_ref().ok_or_else(|| {
+                    ServiceError::Dispatch("Missing grpc_method for Dynamic service".to_string())
+                })?;
+
+                let key = (service.endpoint.clone(), grpc_service.clone());
+                let pool = descriptor_cache
+                    .get(&key)
+                    .ok_or_else(|| {
+                        ServiceError::Dispatch(format!(
+                            "Descriptor pool not found for service {} at endpoint {}",
+                            grpc_service, service.endpoint
+                        ))
+                    })?
+                    .clone();
+
+                Ok(ServiceInstance::Dynamic(Rc::new(DynamicService::new(
+                    service.endpoint,
+                    grpc_service.clone(),
+                    grpc_method.clone(),
+                    service.timeout.0,
+                    service.failure_mode,
+                    pool,
+                ))))
+            }
         }
+    }
+}
+
+#[derive(Debug)]
+pub enum ServiceError {
+    Dispatch(String),
+    Decode(String),
+    Retrieval(String),
+}
+
+impl std::fmt::Display for ServiceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ServiceError::Dispatch(msg) => write!(f, "Failed to dispatch gRPC call: {}", msg),
+            ServiceError::Decode(msg) => write!(f, "Failed to decode response: {}", msg),
+            ServiceError::Retrieval(msg) => {
+                write!(f, "Failed to retrieve gRPC response: {}", msg)
+            }
+        }
+    }
+}
+
+impl std::error::Error for ServiceError {}
+
+impl TryFrom<ServiceConfig> for ServiceInstance {
+    type Error = ServiceError;
+
+    fn try_from(service: ServiceConfig) -> Result<Self, Self::Error> {
+        Self::from_config(service, &Default::default())
     }
 }
 

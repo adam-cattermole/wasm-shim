@@ -4,16 +4,34 @@ use crate::kuadrant::PipelineFactory;
 use crate::metrics::METRICS;
 use crate::{WASM_SHIM_FEATURES, WASM_SHIM_GIT_HASH, WASM_SHIM_PROFILE, WASM_SHIM_VERSION};
 use const_format::formatcp;
+use prost_reflect::DescriptorPool;
 use proxy_wasm::traits::{Context, HttpContext, RootContext};
 use proxy_wasm::types::ContextType;
+use std::collections::HashMap;
 use std::rc::Rc;
 use tracing::{debug, error, info};
 
 const WASM_SHIM_HEADER: &str = "Kuadrant wasm module";
 
+pub enum ConfigState {
+    Ready,
+    AwaitingDescriptors {
+        config: PluginConfiguration,
+        pending_token: u32,
+    },
+}
+
+impl Default for ConfigState {
+    fn default() -> Self {
+        ConfigState::Ready
+    }
+}
+
 pub struct FilterRoot {
     pub context_id: u32,
     pub pipeline_factory: Rc<PipelineFactory>,
+    config_state: ConfigState,
+    descriptor_cache: HashMap<(String, String), DescriptorPool>,
 }
 
 impl FilterRoot {
@@ -21,6 +39,8 @@ impl FilterRoot {
         Self {
             context_id,
             pipeline_factory: Rc::new(PipelineFactory::default()),
+            config_state: ConfigState::default(),
+            descriptor_cache: HashMap::new(),
         }
     }
 }
@@ -78,7 +98,26 @@ impl RootContext for FilterRoot {
                 );
 
                 info!("plugin config parsed: {:?}", config);
-                match PipelineFactory::try_from(config) {
+
+                let dynamic_services = config.get_dynamic_services();
+                if !dynamic_services.is_empty() {
+                    let missing_descriptors: Vec<_> = dynamic_services
+                        .iter()
+                        .filter(|key| !self.descriptor_cache.contains_key(*key))
+                        .cloned()
+                        .collect();
+
+                    if !missing_descriptors.is_empty() {
+                        // todo(@adam-cattermole): Dispatch descriptor fetch for missing descriptors
+                        error!(
+                            "Dynamic services require descriptors that are not cached: {:?}",
+                            missing_descriptors
+                        );
+                        return false;
+                    }
+                }
+
+                match PipelineFactory::try_from_with_descriptors(config, &self.descriptor_cache) {
                     Ok(factory) => {
                         self.pipeline_factory = Rc::new(factory);
                     }

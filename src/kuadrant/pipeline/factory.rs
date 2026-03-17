@@ -9,6 +9,7 @@ use crate::kuadrant::pipeline::executor::Pipeline;
 
 use crate::kuadrant::ReqRespCtx;
 use crate::services::ServiceInstance;
+use prost_reflect::DescriptorPool;
 use radix_trie::Trie;
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -42,12 +43,31 @@ impl Display for BuildError {
 impl TryFrom<PluginConfiguration> for PipelineFactory {
     type Error = CompileError;
 
-    fn try_from(mut config: PluginConfiguration) -> Result<Self, Self::Error> {
+    fn try_from(config: PluginConfiguration) -> Result<Self, Self::Error> {
+        Self::try_from_with_descriptors(config, &Default::default())
+    }
+}
+
+impl Default for PipelineFactory {
+    fn default() -> Self {
+        Self {
+            index: Trie::new(),
+            request_data: Arc::new(Vec::new()),
+            fallback_blueprint: None,
+        }
+    }
+}
+
+impl PipelineFactory {
+    pub fn try_from_with_descriptors(
+        mut config: PluginConfiguration,
+        descriptor_cache: &HashMap<(String, String), DescriptorPool>,
+    ) -> Result<Self, CompileError> {
         let services: HashMap<String, ServiceInstance> = config
             .services
             .drain()
             .map(|(name, service_config)| {
-                let instance = ServiceInstance::try_from(service_config)
+                let instance = ServiceInstance::from_config(service_config, descriptor_cache)
                     .map_err(|e| CompileError::ServiceCreationFailed(format!("{}", e)))?;
                 Ok((name, instance))
             })
@@ -116,19 +136,7 @@ impl TryFrom<PluginConfiguration> for PipelineFactory {
             }),
         })
     }
-}
 
-impl Default for PipelineFactory {
-    fn default() -> Self {
-        Self {
-            index: Trie::new(),
-            request_data: Arc::new(Vec::new()),
-            fallback_blueprint: None,
-        }
-    }
-}
-
-impl PipelineFactory {
     pub fn build(&self, mut ctx: ReqRespCtx) -> Result<Option<Pipeline>, BuildError> {
         let blueprint = match self.select_blueprint(&mut ctx)? {
             Some(bp) => bp,

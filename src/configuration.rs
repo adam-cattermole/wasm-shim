@@ -134,6 +134,22 @@ impl PluginConfiguration {
             descriptor_service: default_descriptor_service(),
         }
     }
+
+    pub fn get_dynamic_services(&self) -> Vec<(String, String)> {
+        self.services
+            .iter()
+            .filter_map(|(_, service)| {
+                if service.service_type == ServiceType::Dynamic {
+                    service
+                        .grpc_service
+                        .as_ref()
+                        .map(|grpc_service| (service.endpoint.clone(), grpc_service.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
 }
 
 #[derive(Deserialize, Debug, Clone, Default, PartialEq)]
