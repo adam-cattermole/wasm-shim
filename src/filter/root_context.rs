@@ -277,6 +277,10 @@ impl Context for FilterRoot {
 mod tests {
     use super::*;
     use crate::configuration::PluginConfiguration;
+    use prost_types::{
+        DescriptorProto, FileDescriptorProto, MethodDescriptorProto, ServiceDescriptorProto,
+    };
+    use std::collections::HashMap;
 
     #[test]
     fn invalid_json_fails_to_parse() {
@@ -309,6 +313,91 @@ mod tests {
 
         let config = serde_json::from_slice::<PluginConfiguration>(config_str.as_bytes()).unwrap();
         let result = PipelineFactory::try_from(config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_factory_initialization_with_descriptors() {
+        let file_descriptor = FileDescriptorProto {
+            name: Some("test.proto".to_string()),
+            package: Some("test".to_string()),
+            message_type: vec![
+                DescriptorProto {
+                    name: Some("Request".to_string()),
+                    ..Default::default()
+                },
+                DescriptorProto {
+                    name: Some("Response".to_string()),
+                    ..Default::default()
+                },
+            ],
+            service: vec![ServiceDescriptorProto {
+                name: Some("TestService".to_string()),
+                method: vec![MethodDescriptorProto {
+                    name: Some("TestMethod".to_string()),
+                    input_type: Some(".test.Request".to_string()),
+                    output_type: Some(".test.Response".to_string()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let fds = FileDescriptorSet {
+            file: vec![file_descriptor],
+        };
+
+        let pool = DescriptorPool::from_file_descriptor_set(fds)
+            .expect("Failed to create descriptor pool");
+
+        let mut descriptor_cache = HashMap::new();
+        descriptor_cache.insert(
+            ("test-cluster".to_string(), "test.TestService".to_string()),
+            pool,
+        );
+
+        let config_str = serde_json::json!({
+            "services": {
+                "dynamic-service": {
+                    "type": "dynamic",
+                    "endpoint": "test-cluster",
+                    "failureMode": "deny",
+                    "timeout": "1s",
+                    "grpcService": "test.TestService",
+                    "grpcMethod": "TestMethod"
+                }
+            },
+            "actionSets": []
+        })
+        .to_string();
+
+        let config = serde_json::from_slice::<PluginConfiguration>(config_str.as_bytes()).unwrap();
+        let result = PipelineFactory::try_from_with_descriptors(config, &descriptor_cache);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_factory_fails_without_required_descriptors() {
+        let descriptor_cache: HashMap<(String, String), DescriptorPool> = HashMap::new();
+
+        let config_str = serde_json::json!({
+            "services": {
+                "dynamic-service": {
+                    "type": "dynamic",
+                    "endpoint": "test-cluster",
+                    "failureMode": "deny",
+                    "timeout": "1s",
+                    "grpcService": "test.TestService",
+                    "grpcMethod": "TestMethod"
+                }
+            },
+            "actionSets": []
+        })
+        .to_string();
+
+        let config = serde_json::from_slice::<PluginConfiguration>(config_str.as_bytes()).unwrap();
+        let result = PipelineFactory::try_from_with_descriptors(config, &descriptor_cache);
         assert!(result.is_err());
     }
 }
