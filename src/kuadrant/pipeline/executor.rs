@@ -7,6 +7,12 @@ use crate::kuadrant::{
     ReqRespCtx,
 };
 use std::collections::{BTreeMap, HashSet};
+use std::ops::Not;
+
+pub enum PipelineState {
+    InProgress(Box<Pipeline>),
+    Completed { should_resume: bool },
+}
 
 pub struct Pipeline {
     pub ctx: ReqRespCtx,
@@ -14,6 +20,19 @@ pub struct Pipeline {
     deferred_tasks: BTreeMap<u32, Box<dyn Task>>,
     completed_tasks: HashSet<String>,
     teardown_tasks: Vec<Box<dyn TeardownAction>>,
+    terminated: bool,
+}
+
+impl From<Pipeline> for PipelineState {
+    fn from(pipeline: Pipeline) -> Self {
+        if pipeline.task_queue.is_empty() && pipeline.deferred_tasks.is_empty() {
+            PipelineState::Completed {
+                should_resume: pipeline.terminated.not(),
+            }
+        } else {
+            PipelineState::InProgress(Box::new(pipeline))
+        }
+    }
 }
 
 impl Pipeline {
@@ -24,6 +43,7 @@ impl Pipeline {
             deferred_tasks: BTreeMap::new(),
             completed_tasks: HashSet::new(),
             teardown_tasks: Vec::new(),
+            terminated: false,
         }
     }
 
@@ -54,6 +74,7 @@ impl Pipeline {
     }
 
     fn execute_teardown(&mut self) {
+        self.replace_deferred_with_noop();
         for action in self.teardown_tasks.drain(..) {
             match action.execute(&mut self.ctx) {
                 TeardownOutcome::Done => {}
@@ -71,7 +92,7 @@ impl Pipeline {
         }
     }
 
-    pub fn eval(mut self) -> Option<Self> {
+    pub fn eval(mut self) -> PipelineState {
         let tasks_to_process: Vec<_> = self.task_queue.drain(..).collect();
 
         for task in tasks_to_process {
@@ -106,31 +127,28 @@ impl Pipeline {
                 TaskOutcome::Terminate(terminal_task) => {
                     terminal_task.apply(&mut self.ctx);
                     self.task_queue.clear();
+                    self.terminated = true;
                     self.execute_teardown();
-                    return if self.deferred_tasks.is_empty() {
-                        None
-                    } else {
-                        Some(self)
-                    };
+                    return self.into();
                 }
             }
         }
 
-        if self.task_queue.is_empty() && self.deferred_tasks.is_empty() {
-            if !self.teardown_tasks.is_empty() {
-                self.execute_teardown();
-            }
-            if self.deferred_tasks.is_empty() {
-                None
-            } else {
-                Some(self)
-            }
-        } else {
-            Some(self)
+        if self.task_queue.is_empty()
+            && self.deferred_tasks.is_empty()
+            && !self.teardown_tasks.is_empty()
+        {
+            self.execute_teardown();
         }
+        self.into()
     }
 
-    pub fn digest(mut self, token_id: u32, status_code: u32, response_size: usize) -> Option<Self> {
+    pub fn digest(
+        mut self,
+        token_id: u32,
+        status_code: u32,
+        response_size: usize,
+    ) -> PipelineState {
         if let Some(pending) = self.deferred_tasks.remove(&token_id) {
             match self.ctx.set_grpc_response_data(status_code, response_size) {
                 Ok(_) => {}
@@ -163,7 +181,7 @@ impl Pipeline {
                 TaskOutcome::Terminate(terminal_task) => {
                     terminal_task.apply(&mut self.ctx);
                     self.task_queue.clear();
-                    self.replace_deferred_with_noop();
+                    self.terminated = true;
                     self.execute_teardown();
 
                     return self.eval();
