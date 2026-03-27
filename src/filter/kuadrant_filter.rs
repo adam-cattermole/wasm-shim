@@ -1,4 +1,4 @@
-use crate::kuadrant::{Pipeline, PipelineFactory, ReqRespCtx};
+use crate::kuadrant::{Pipeline, PipelineFactory, PipelineState, ReqRespCtx};
 use crate::metrics::METRICS;
 use proxy_wasm::traits::{Context, HttpContext};
 use proxy_wasm::types::Action;
@@ -34,20 +34,26 @@ impl Context for KuadrantFilter {
             self.context_id, token_id, status_code
         );
         if let Some(pipeline) = self.pipeline.take() {
-            self.pipeline = pipeline.digest(token_id, status_code, response_size);
+            match pipeline.digest(token_id, status_code, response_size) {
+                PipelineState::InProgress(p) => {
+                    self.pipeline = Some(*p);
+                }
+                PipelineState::Completed { should_resume } => {
+                    self.pipeline = None;
+                    if should_resume {
+                        let result = if self.in_response_phase {
+                            self.resume_http_response()
+                        } else {
+                            self.resume_http_request()
+                        };
 
-            if !self.should_pause() {
-                let result = if self.in_response_phase {
-                    self.resume_http_response()
-                } else {
-                    self.resume_http_request()
-                };
-
-                if let Err(e) = result {
-                    error!(
-                        "#{} failed to resume filter processing: {:?}",
-                        self.context_id, e
-                    );
+                        if let Err(e) = result {
+                            error!(
+                                "#{} failed to resume filter processing: {:?}",
+                                self.context_id, e
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -67,7 +73,14 @@ impl HttpContext for KuadrantFilter {
             Ok(Some(pipeline)) => {
                 debug!("#{} pipeline built successfully", self.context_id);
                 METRICS.hits().increment();
-                self.pipeline = pipeline.eval();
+                match pipeline.eval() {
+                    PipelineState::InProgress(p) => {
+                        self.pipeline = Some(*p);
+                    }
+                    PipelineState::Completed { .. } => {
+                        self.pipeline = None;
+                    }
+                }
                 if self.should_pause() {
                     Action::Pause
                 } else {
@@ -91,7 +104,14 @@ impl HttpContext for KuadrantFilter {
     fn on_http_request_body(&mut self, _buffer_size: usize, _end_of_stream: bool) -> Action {
         debug!("#{} on_http_request_body", self.context_id);
         if let Some(pipeline) = self.pipeline.take() {
-            self.pipeline = pipeline.eval();
+            match pipeline.eval() {
+                PipelineState::InProgress(p) => {
+                    self.pipeline = Some(*p);
+                }
+                PipelineState::Completed { .. } => {
+                    self.pipeline = None;
+                }
+            }
         }
         if self.should_pause() {
             Action::Pause
@@ -105,7 +125,14 @@ impl HttpContext for KuadrantFilter {
         METRICS.allowed().increment();
         self.in_response_phase = true;
         if let Some(pipeline) = self.pipeline.take() {
-            self.pipeline = pipeline.eval();
+            match pipeline.eval() {
+                PipelineState::InProgress(p) => {
+                    self.pipeline = Some(*p);
+                }
+                PipelineState::Completed { .. } => {
+                    self.pipeline = None;
+                }
+            }
         }
         if self.should_pause() {
             Action::Pause
@@ -120,7 +147,14 @@ impl HttpContext for KuadrantFilter {
             pipeline
                 .ctx
                 .set_current_response_body_buffer_size(buffer_size, end_of_stream);
-            self.pipeline = pipeline.eval();
+            match pipeline.eval() {
+                PipelineState::InProgress(p) => {
+                    self.pipeline = Some(*p);
+                }
+                PipelineState::Completed { .. } => {
+                    self.pipeline = None;
+                }
+            }
         }
         if self.should_pause() {
             Action::Pause
