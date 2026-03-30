@@ -245,7 +245,13 @@ impl RateLimitTask {
 impl Task for RateLimitTask {
     fn apply(self: Box<Self>, ctx: &mut ReqRespCtx) -> TaskOutcome {
         match self.predicates.apply(ctx) {
-            Ok(AttributeState::Pending) => return TaskOutcome::Requeued(vec![self]),
+            Ok(AttributeState::Pending) => {
+                return if ctx.is_end_of_stream() {
+                    TaskOutcome::Failed
+                } else {
+                    TaskOutcome::Requeued(vec![self])
+                };
+            }
             Ok(AttributeState::Available(false)) => return TaskOutcome::Done,
             Ok(AttributeState::Available(true)) => {}
             Err(e) => {
@@ -259,7 +265,11 @@ impl Task for RateLimitTask {
             Ok(AttributeState::Available(descriptors)) => descriptors,
             Ok(AttributeState::Pending) => {
                 // Need to wait for attributes, requeue
-                return TaskOutcome::Requeued(vec![self]);
+                return if ctx.is_end_of_stream() {
+                    TaskOutcome::Failed
+                } else {
+                    TaskOutcome::Requeued(vec![self])
+                };
             }
             Err(e) => {
                 error!("Failed to build descriptors: {e:?}");
