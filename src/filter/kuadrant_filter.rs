@@ -2,6 +2,7 @@ use crate::kuadrant::{Pipeline, PipelineFactory, PipelineState, ReqRespCtx};
 use crate::metrics::METRICS;
 use proxy_wasm::traits::{Context, HttpContext};
 use proxy_wasm::types::Action;
+use std::ops::Not;
 use std::rc::Rc;
 use tracing::{debug, error};
 
@@ -34,26 +35,29 @@ impl Context for KuadrantFilter {
             self.context_id, token_id, status_code
         );
         if let Some(pipeline) = self.pipeline.take() {
-            match pipeline.digest(token_id, status_code, response_size) {
+            let should_resume = match pipeline.digest(token_id, status_code, response_size) {
                 PipelineState::InProgress(p) => {
                     self.pipeline = Some(*p);
+                    self.should_pause().not()
                 }
                 PipelineState::Completed { should_resume } => {
                     self.pipeline = None;
-                    if should_resume {
-                        let result = if self.in_response_phase {
-                            self.resume_http_response()
-                        } else {
-                            self.resume_http_request()
-                        };
+                    should_resume
+                }
+            };
 
-                        if let Err(e) = result {
-                            error!(
-                                "#{} failed to resume filter processing: {:?}",
-                                self.context_id, e
-                            );
-                        }
-                    }
+            if should_resume {
+                let result = if self.in_response_phase {
+                    self.resume_http_response()
+                } else {
+                    self.resume_http_request()
+                };
+
+                if let Err(e) = result {
+                    error!(
+                        "#{} failed to resume filter processing: {:?}",
+                        self.context_id, e
+                    );
                 }
             }
         }
