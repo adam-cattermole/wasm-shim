@@ -43,6 +43,7 @@ pub trait Task {
 pub struct PendingTask {
     task_id: String,
     process_response: Box<ResponseProcessor>,
+    pause: bool,
 }
 
 impl PendingTask {
@@ -50,6 +51,15 @@ impl PendingTask {
         Self {
             task_id,
             process_response,
+            pause: true,
+        }
+    }
+
+    pub fn background(task_id: String, process_response: Box<ResponseProcessor>) -> Self {
+        Self {
+            task_id,
+            process_response,
+            pause: false,
         }
     }
 }
@@ -62,7 +72,7 @@ impl Task for PendingTask {
         Some(self.task_id.clone())
     }
     fn pauses_filter(&self) -> bool {
-        true
+        self.pause
     }
 }
 
