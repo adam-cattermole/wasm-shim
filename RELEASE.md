@@ -1,28 +1,47 @@
 # How to release wasm-shim
 
-To release a version “vX.Y.Z” of the wasm-shim in GitHub and Quay.io, follow these steps:
+The wasm-shim uses an automated release process with protected release branches.
 
-1. Pick a `<git-ref>` (SHA-1) as source.
+## Quick Start
 
-```shell
-git checkout <git-ref>
-```
+1. **Run the workflow**: Actions → “Automated Release WASM Shim” → “Run workflow”
+   - **wasmShimVersion**: Version to release (e.g., `0.12.1`)
+   - **gitRef**: `main` for new minor, `release-v0.12` for patches
+2. **Review and merge the PR** that gets created
+3. **Done** - tag and release happen automatically on merge
 
-2. Create a new "floating" commit with the release version removing the `-dev`
-   suffix ([example](https://github.com/Kuadrant/wasm-shim/commit/55d785e6f6f56b57184a95b5bf285f43226e8974)).
+## Standard Release
 
-3. Create a new tag and named release `vX.Y.Z`. Push the tag to GitHub. This will trigger the image to be built in
-   Quay.io.
+1. Actions → “Automated Release WASM Shim” → “Run workflow”
+   - **gitRef**: `main` (for new minor like `0.13.0`) or `release-v0.12` (for patch like `0.12.1`)
+   - **wasmShimVersion**: `0.12.1` (or whatever version)
+2. Review and merge the PR
+3. Tag and release created automatically
 
-```shell
-git tag -a vX.Y.Z -m "vX.Y.Z" -s
-git push origin vX.Y.Z
-```
+## Release with Cherry-picked Fixes
 
-4. Then at the GitHub repository, create a new release from the tag you just pushed, auto-generating the release notes.
-   This will trigger the workflow to build the wasm-shim binary to append to the
-   release ([example](https://github.com/Kuadrant/wasm-shim/releases/tag/v0.8.0)).
+1. **First, cherry-pick and merge your fixes:**
 
-5. Now that the release has been created, create a PR to update to the next development (`-dev`)
-   version ([example](https://github.com/Kuadrant/wasm-shim/pull/150)). You can use the Claude Code
-   command `/bump-dev` to automate this step
+   ```bash
+   git checkout -b backport-my-fix origin/release-v0.12
+   git cherry-pick <commit-sha>
+   git push -u origin HEAD
+   # Create PR from backport-my-fix to release-v0.12, get it merged
+   ```
+
+2. **Then run the release workflow:**
+   - Actions → “Automated Release WASM Shim” → “Run workflow”
+   - **gitRef**: `release-v0.12` (picks up the cherry-picks)
+   - **wasmShimVersion**: `0.12.1`
+
+3. Review and merge the version bump PR
+4. Tag and release created automatically
+
+## Details
+
+- Version format: semver without `v` prefix (e.g., `0.12.1`, not `v0.12.1`)
+- Release branches: `release-v0.12`, `release-v0.13`, etc.
+- One branch per minor version, shared by all patches
+- Workflow creates the release branch if it doesn't exist
+  - For new minor versions, creates from specified `gitRef`
+  - For existing branches, keeps existing branch (use `gitRef` to catch up via PR)
