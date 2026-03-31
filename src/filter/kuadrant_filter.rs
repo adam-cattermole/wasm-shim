@@ -4,13 +4,14 @@ use proxy_wasm::traits::{Context, HttpContext};
 use proxy_wasm::types::Action;
 use std::ops::Not;
 use std::rc::Rc;
-use tracing::{debug, error};
+use tracing::{debug, error, trace, warn};
 
 pub struct KuadrantFilter {
     context_id: u32,
     factory: Rc<PipelineFactory>,
     pipeline: Option<Pipeline>,
     in_response_phase: bool,
+    force_resume: bool,
 }
 
 impl KuadrantFilter {
@@ -20,11 +21,22 @@ impl KuadrantFilter {
             factory,
             pipeline: None,
             in_response_phase: false,
+            force_resume: false,
         }
     }
 
     fn should_pause(&self) -> bool {
         self.pipeline.as_ref().is_some_and(|p| p.requires_pause())
+    }
+
+    #[allow(clippy::expect_used)]
+    fn should_resume(&self) -> bool {
+        self.pipeline
+            .as_ref()
+            .expect("pipeline must be present")
+            .is_terminated()
+            .not()
+            && self.should_pause().not()
     }
 }
 
@@ -38,18 +50,25 @@ impl Context for KuadrantFilter {
             let should_resume = match pipeline.digest(token_id, status_code, response_size) {
                 PipelineState::InProgress(p) => {
                     self.pipeline = Some(*p);
-                    self.should_pause().not()
+                    self.should_resume()
                 }
                 PipelineState::Completed { should_resume } => {
                     self.pipeline = None;
-                    should_resume
+                    trace!(
+                        "#{} PipelineState::Completed: should_resume={}",
+                        self.context_id,
+                        should_resume
+                    );
+                    should_resume || self.force_resume
                 }
             };
 
             if should_resume {
                 let result = if self.in_response_phase {
+                    trace!("on_grpc_call_response: resume_http_response");
                     self.resume_http_response()
                 } else {
+                    trace!("on_grpc_call_response: resume_http_request");
                     self.resume_http_request()
                 };
 
@@ -60,6 +79,8 @@ impl Context for KuadrantFilter {
                     );
                 }
             }
+        } else {
+            warn!("#{} received response without a pipeline", self.context_id);
         }
     }
 }
@@ -86,8 +107,10 @@ impl HttpContext for KuadrantFilter {
                     }
                 }
                 if self.should_pause() {
+                    trace!("on_http_request_headers: pause");
                     Action::Pause
                 } else {
+                    trace!("on_http_request_headers: continue");
                     Action::Continue
                 }
             }
@@ -118,8 +141,10 @@ impl HttpContext for KuadrantFilter {
             }
         }
         if self.should_pause() {
+            trace!("on_http_request_body: pause");
             Action::Pause
         } else {
+            trace!("on_http_request_body: continue");
             Action::Continue
         }
     }
@@ -139,8 +164,10 @@ impl HttpContext for KuadrantFilter {
             }
         }
         if self.should_pause() {
+            trace!("on_http_response_headers: pause");
             Action::Pause
         } else {
+            trace!("on_http_response_headers: continue");
             Action::Continue
         }
     }
@@ -161,9 +188,17 @@ impl HttpContext for KuadrantFilter {
             }
         }
         if self.should_pause() {
+            trace!("on_http_response_body: pause");
             Action::Pause
         } else {
-            Action::Continue
+            if self.pipeline.is_some() && end_of_stream {
+                trace!("on_http_response_body: pipeline is some, pause");
+                self.force_resume = true;
+                Action::Pause
+            } else {
+                trace!("on_http_response_body: continue");
+                Action::Continue
+            }
         }
     }
 }

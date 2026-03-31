@@ -1,4 +1,4 @@
-use tracing::error;
+use tracing::{error, trace};
 
 use crate::kuadrant::{
     pipeline::tasks::{
@@ -57,6 +57,10 @@ impl Pipeline {
         self
     }
 
+    pub fn is_terminated(&self) -> bool {
+        self.terminated
+    }
+
     fn replace_deferred_with_noop(&mut self) {
         // map existing deferred tasks to no-op consumers
         let deferred = std::mem::take(&mut self.deferred_tasks);
@@ -64,7 +68,7 @@ impl Pipeline {
             .into_iter()
             .map(|(token_id, task)| {
                 // Create a new PendingTask with no-op processor
-                let pending = Box::new(PendingTask::new(
+                let pending = Box::new(PendingTask::background(
                     task.id().unwrap_or_default(),
                     Box::new(noop_response_processor(token_id)),
                 )) as Box<dyn Task>;
@@ -80,7 +84,7 @@ impl Pipeline {
                 TeardownOutcome::Done => {}
                 TeardownOutcome::Deferred(token_id) => {
                     // Create a no-op PendingTask for this deferred teardown action
-                    let pending = Box::new(PendingTask::new(
+                    let pending = Box::new(PendingTask::background(
                         format!("teardown_{}", token_id),
                         Box::new(noop_response_processor(token_id)),
                     ));
@@ -195,7 +199,10 @@ impl Pipeline {
     }
 
     pub fn requires_pause(&self) -> bool {
-        let has_deferred = !self.deferred_tasks.is_empty();
+        let has_blocking_deferred = self
+            .deferred_tasks
+            .iter()
+            .any(|(_, task)| task.pauses_filter());
         let has_blocking = self.task_queue.iter().any(|task| {
             // Only consider tasks whose dependencies are met.
             // Tasks with unmet deps shouldn't block the filter since they're
@@ -206,8 +213,12 @@ impl Pipeline {
                 .all(|dep| self.completed_tasks.contains(dep));
             deps_met && task.pauses_filter()
         });
-
-        has_deferred || has_blocking
+        trace!(
+            "requires_pause: has_blocking_deferred={} || has_blocking={}",
+            has_blocking_deferred,
+            has_blocking
+        );
+        has_blocking_deferred || has_blocking
     }
 }
 
@@ -291,20 +302,38 @@ mod tests {
     }
 
     #[test]
-    fn requires_pause_returns_true_for_deferred_tasks() {
-        // Even with blocking task that has unmet deps, deferred tasks cause pause
+    fn requires_pause_returns_true_for_blocking_deferred_tasks() {
+        // Even with blocking task that has unmet deps, blocking deferred tasks cause pause
         let blocking_task = TestTask::new("blocker", vec!["auth"], true);
-        let deferred_task = TestTask::new("auth", vec![], false);
+        let deferred_task = TestTask::new("auth", vec![], true);
 
         let ctx = create_test_context();
         let mut pipeline = Pipeline::new(ctx);
         pipeline.task_queue.push(Box::new(blocking_task));
         pipeline.deferred_tasks.insert(42, Box::new(deferred_task));
 
-        // requires_pause should return TRUE because there's a deferred task
+        // requires_pause should return TRUE because there's a blocking deferred task
         assert!(
             pipeline.requires_pause(),
-            "requires_pause() should return true when deferred tasks exist"
+            "requires_pause() should return true when blocking deferred tasks exist"
+        );
+    }
+
+    #[test]
+    fn requires_pause_ignores_background_deferred_tasks() {
+        // Background deferred tasks (pauses_filter=false) should not cause pause
+        let background_task = TestTask::new("background", vec![], false);
+
+        let ctx = create_test_context();
+        let mut pipeline = Pipeline::new(ctx);
+        pipeline
+            .deferred_tasks
+            .insert(42, Box::new(background_task));
+
+        // requires_pause should return FALSE because background tasks don't pause
+        assert!(
+            !pipeline.requires_pause(),
+            "requires_pause() should ignore background deferred tasks"
         );
     }
 
