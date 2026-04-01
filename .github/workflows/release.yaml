@@ -46,12 +46,9 @@ jobs:
           fi
 
       - name: Set up Rust toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          profile: minimal
-          toolchain: stable
-          override: true
-          target: wasm32-wasip1
+          targets: wasm32-wasip1
 
       - name: Set up protoc
         uses: arduino/setup-protoc@v3
@@ -60,10 +57,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build WASM binary
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --release --target wasm32-wasip1
+        run: cargo build --release --target wasm32-wasip1
 
       - name: Rename WASM binary
         run: |

@@ -18,64 +18,43 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rs/toolchain@v1
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          profile: minimal
-          toolchain: stable
-          override: true
-          target: wasm32-wasip1
+          targets: wasm32-wasip1
       - uses: arduino/setup-protoc@v3
         with:
           version: "3.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions-rs/cargo@v1
-        with:
-          command: check
-          args: --release --target wasm32-wasip1
+      - run: cargo check --release --target wasm32-wasip1
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rs/toolchain@v1
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          profile: minimal
-          toolchain: stable
-          override: true
-          target: wasm32-wasip1
+          targets: wasm32-wasip1
+          components: rustfmt
       - uses: arduino/setup-protoc@v3
         with:
           version: "3.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --target=wasm32-wasip1 --release
-      - run: rustup component add rustfmt
-      - uses: actions-rs/cargo@v1
-        with:
-          command: fmt
-          args: --all -- --check
+      - run: cargo build --target=wasm32-wasip1 --release
+      - run: cargo fmt --all -- --check
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rs/toolchain@v1
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          profile: minimal
-          toolchain: stable
-          override: true
-          target: wasm32-wasip1
+          targets: wasm32-wasip1
+          components: clippy
       - uses: arduino/setup-protoc@v3
         with:
           version: "3.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - run: rustup component add clippy
-      - uses: actions-rs/cargo@v1
-        with:
-          command: clippy
-          args: --all-targets --all-features -- -D warnings
+      - run: cargo clippy --all-targets --all-features -- -D warnings
   required-checks:
     name: Rust Required Checks
     # This check adds a list of checks to one job to simplify adding settings to the repo.
