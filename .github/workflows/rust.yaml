@@ -21,6 +21,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
       - uses: arduino/setup-protoc@v3
         with:
           version: "3.x"
@@ -35,6 +36,7 @@ jobs:
         with:
           targets: wasm32-wasip1
           components: rustfmt
+      - uses: Swatinem/rust-cache@v2
       - uses: arduino/setup-protoc@v3
         with:
           version: "3.x"
@@ -50,6 +52,7 @@ jobs:
         with:
           targets: wasm32-wasip1
           components: clippy
+      - uses: Swatinem/rust-cache@v2
       - uses: arduino/setup-protoc@v3
         with:
           version: "3.x"
