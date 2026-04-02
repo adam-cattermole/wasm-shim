@@ -15,21 +15,16 @@ jobs:
     name: Basic integration test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          profile: minimal
-          toolchain: stable
-          override: true
-          target: wasm32-wasip1
+          targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
       - uses: arduino/setup-protoc@v3
         with:
           version: "3.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --target wasm32-wasip1
+      - run: cargo build --target wasm32-wasip1
       - name: Run docker compose
         run: |
           docker compose -f ./e2e/basic/docker-compose.yaml run start_services
@@ -40,21 +35,16 @@ jobs:
     name: Remote address integration test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          profile: minimal
-          toolchain: stable
-          override: true
-          target: wasm32-wasip1
+          targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
       - uses: arduino/setup-protoc@v3
         with:
           version: "3.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --target wasm32-wasip1
+      - run: cargo build --target wasm32-wasip1
       - name: Run docker compose
         run: |
           docker compose -f ./e2e/remote-address/docker-compose.yaml run start_services
@@ -70,5 +60,4 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
       - run: echo '${{ toJSON(needs) }}' | jq -e 'all(.[]; .result == "success" or .result == "skipped")'
