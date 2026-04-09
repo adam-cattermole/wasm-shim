@@ -8,8 +8,6 @@ use serde::de::{Error, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::time::Duration;
 
-use crate::filter::DescriptorKey;
-
 #[derive(Deserialize, Debug, Clone)]
 pub struct ConditionalData {
     #[serde(default)]
@@ -135,21 +133,6 @@ impl PluginConfiguration {
             observability: Default::default(),
             descriptor_service: default_descriptor_service(),
         }
-    }
-
-    pub fn get_dynamic_services(&self) -> Vec<DescriptorKey> {
-        self.services
-            .iter()
-            .filter_map(|(_, service)| {
-                if service.service_type == ServiceType::Dynamic {
-                    service.grpc_service.as_ref().map(|grpc_service| {
-                        DescriptorKey::new(service.endpoint.clone(), grpc_service.clone())
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect()
     }
 }
 

@@ -16,7 +16,6 @@ pub struct FilterRoot {
     pub context_id: u32,
     pub pipeline_factory: Rc<PipelineFactory>,
     pub descriptor_manager: Rc<DescriptorManager>,
-    pending_config: Option<(PluginConfiguration, PipelineFactory)>,
 }
 
 impl FilterRoot {
@@ -25,19 +24,13 @@ impl FilterRoot {
             context_id,
             pipeline_factory: Rc::new(PipelineFactory::default()),
             descriptor_manager: Rc::new(DescriptorManager::default()),
-            pending_config: None,
         }
     }
 
-    fn activate_config(&mut self, factory: PipelineFactory) {
-        self.pipeline_factory = Rc::new(factory);
-    }
-
     fn process_config(&mut self, config: PluginConfiguration) -> bool {
-        self.descriptor_manager
-            .set_descriptor_service(&config.descriptor_service);
+        let descriptor_service = config.descriptor_service.clone();
 
-        let factory = match PipelineFactory::try_from(config.clone(), &self.descriptor_manager) {
+        let factory = match PipelineFactory::try_from(config, &self.descriptor_manager) {
             Ok(f) => f,
             Err(err) => {
                 error!("failed to compile plugin config: {:?}", err);
@@ -45,52 +38,17 @@ impl FilterRoot {
             }
         };
 
+        self.pipeline_factory = Rc::new(factory);
+        self.descriptor_manager
+            .set_descriptor_service(&descriptor_service);
+
         if self.descriptor_manager.needs_fetch() {
             if let Err(e) = self.descriptor_manager.fetch_missing(self) {
-                error!("Configuration failed: {}", e);
-                return false;
+                error!("Failed to fetch descriptors: {}", e);
             }
-            self.pending_config = Some((config, factory));
-        } else {
-            self.activate_config(factory);
         }
 
         true
-    }
-
-    fn handle_descriptor_response(
-        &mut self,
-        token_id: u32,
-        status_code: u32,
-        response_size: usize,
-    ) -> Result<(), String> {
-        if status_code != 0 {
-            return Err(format!("descriptor fetch returned status {}", status_code));
-        }
-
-        let response_bytes = self
-            .get_grpc_call_response_body(0, response_size)
-            .map_err(|status| format!("could not get descriptor response: {:?}", status))?
-            .ok_or_else(|| "descriptor response body is empty".to_string())?;
-
-        self.descriptor_manager
-            .handle_response(token_id, response_bytes)?;
-
-        if let Some((config, factory)) = self.pending_config.take() {
-            let missing: Vec<_> = config
-                .get_dynamic_services()
-                .into_iter()
-                .filter(|key| !self.descriptor_manager.contains_pool(&key))
-                .collect();
-
-            if missing.is_empty() {
-                self.activate_config(factory);
-            } else {
-                self.pending_config = Some((config, factory));
-            }
-        }
-
-        Ok(())
     }
 }
 
@@ -163,8 +121,28 @@ impl RootContext for FilterRoot {
 
 impl Context for FilterRoot {
     fn on_grpc_call_response(&mut self, token_id: u32, status_code: u32, response_size: usize) {
-        if let Err(e) = self.handle_descriptor_response(token_id, status_code, response_size) {
-            error!("Configuration failed: {}", e);
+        if status_code != 0 {
+            error!("Descriptor fetch returned status {}", status_code);
+            return;
+        }
+
+        let response_bytes = match self.get_grpc_call_response_body(0, response_size) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => {
+                error!("Descriptor response body is empty");
+                return;
+            }
+            Err(status) => {
+                error!("Could not get descriptor response: {:?}", status);
+                return;
+            }
+        };
+
+        if let Err(e) = self
+            .descriptor_manager
+            .handle_response(token_id, response_bytes)
+        {
+            error!("Failed to handle descriptor response: {}", e);
         }
     }
 }

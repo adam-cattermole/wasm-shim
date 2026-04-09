@@ -252,7 +252,7 @@ impl Blueprint {
                     }
                 }
                 ServiceInstance::Dynamic(_) => {
-                    unreachable!("Dynamic services cannot be instantiated without descriptor pools")
+                    todo!("DynamicTask not yet implemented")
                 }
             }
         }

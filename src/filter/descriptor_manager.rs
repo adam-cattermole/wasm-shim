@@ -112,14 +112,6 @@ impl DescriptorManager {
             .insert(key, DescriptorState::Resolved(Rc::new(pool)));
     }
 
-    // todo(@adam-cattermole): temporary until manager handles internally
-    pub fn contains_pool(&self, key: &DescriptorKey) -> bool {
-        matches!(
-            self.descriptors.borrow().get(key),
-            Some(DescriptorState::Resolved(_))
-        )
-    }
-
     fn get_missing(&self) -> Vec<DescriptorKey> {
         self.descriptors
             .borrow()
