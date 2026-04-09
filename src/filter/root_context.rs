@@ -1,5 +1,5 @@
 use super::kuadrant_filter::KuadrantFilter;
-use super::DescriptorKey;
+use super::{DescriptorKey, DescriptorManager};
 use crate::configuration::PluginConfiguration;
 use crate::envoy::kuadrant::v1::{
     GetServiceDescriptorsRequest, GetServiceDescriptorsResponse, ServiceRef,
@@ -23,9 +23,9 @@ const WASM_SHIM_HEADER: &str = "Kuadrant wasm module";
 pub struct FilterRoot {
     pub context_id: u32,
     pub pipeline_factory: Rc<PipelineFactory>,
+    pub descriptor_manager: Rc<DescriptorManager>,
     pending_requests: HashMap<u32, HashSet<DescriptorKey>>,
     pending_config: Option<PluginConfiguration>,
-    descriptor_cache: HashMap<DescriptorKey, DescriptorPool>,
 }
 
 impl FilterRoot {
@@ -33,9 +33,9 @@ impl FilterRoot {
         Self {
             context_id,
             pipeline_factory: Rc::new(PipelineFactory::default()),
+            descriptor_manager: Rc::new(DescriptorManager::default()),
             pending_requests: HashMap::new(),
             pending_config: None,
-            descriptor_cache: HashMap::new(),
         }
     }
 
@@ -100,14 +100,16 @@ impl FilterRoot {
             let pool = DescriptorPool::from_file_descriptor_set(fds)
                 .map_err(|e| format!("could not build DescriptorPool for {:?}: {}", key, e))?;
             debug!("Configuration: cached descriptor for {:?}", key);
-            self.descriptor_cache.insert(key, pool);
+            self.descriptor_manager.insert_pool(key, pool);
         }
 
         Ok(())
     }
 
     fn activate_config(&mut self, config: PluginConfiguration) -> bool {
-        match PipelineFactory::try_from_with_descriptors(config, &self.descriptor_cache) {
+        let descriptor_cache = self.descriptor_manager.get_all_pools();
+
+        match PipelineFactory::try_from_with_descriptors(config, &descriptor_cache) {
             Ok(factory) => {
                 self.pipeline_factory = Rc::new(factory);
                 true
@@ -127,7 +129,7 @@ impl FilterRoot {
 
         let missing_descriptors: Vec<_> = dynamic_services
             .iter()
-            .filter(|key| !self.descriptor_cache.contains_key(*key))
+            .filter(|key| !self.descriptor_manager.contains_pool(key))
             .cloned()
             .collect();
 
@@ -185,7 +187,7 @@ impl FilterRoot {
             let missing: Vec<_> = config
                 .get_dynamic_services()
                 .into_iter()
-                .filter(|key| !self.descriptor_cache.contains_key(key))
+                .filter(|key| !self.descriptor_manager.contains_pool(&key))
                 .collect();
 
             if missing.is_empty() {

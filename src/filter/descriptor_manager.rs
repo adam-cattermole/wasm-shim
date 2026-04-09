@@ -82,6 +82,29 @@ impl DescriptorManager {
             .borrow_mut()
             .insert(key, DescriptorState::Resolved(Rc::new(pool)));
     }
+
+    // todo(@adam-cattermole): temporary until manager handles internally
+    pub fn contains_pool(&self, key: &DescriptorKey) -> bool {
+        matches!(
+            self.descriptors.borrow().get(key),
+            Some(DescriptorState::Resolved(_))
+        )
+    }
+
+    // todo(@adam-cattermole): temporary until manager handles internally
+    pub fn get_all_pools(&self) -> HashMap<DescriptorKey, DescriptorPool> {
+        self.descriptors
+            .borrow()
+            .iter()
+            .filter_map(|(key, state)| {
+                if let DescriptorState::Resolved(pool) = state {
+                    Some((key.clone(), DescriptorPool::clone(pool)))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
