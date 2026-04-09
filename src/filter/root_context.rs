@@ -1,4 +1,5 @@
 use super::kuadrant_filter::KuadrantFilter;
+use super::DescriptorKey;
 use crate::configuration::PluginConfiguration;
 use crate::envoy::kuadrant::v1::{
     GetServiceDescriptorsRequest, GetServiceDescriptorsResponse, ServiceRef,
@@ -22,9 +23,9 @@ const WASM_SHIM_HEADER: &str = "Kuadrant wasm module";
 pub struct FilterRoot {
     pub context_id: u32,
     pub pipeline_factory: Rc<PipelineFactory>,
-    pending_requests: HashMap<u32, HashSet<(String, String)>>,
+    pending_requests: HashMap<u32, HashSet<DescriptorKey>>,
     pending_config: Option<PluginConfiguration>,
-    descriptor_cache: HashMap<(String, String), DescriptorPool>,
+    descriptor_cache: HashMap<DescriptorKey, DescriptorPool>,
 }
 
 impl FilterRoot {
@@ -41,7 +42,7 @@ impl FilterRoot {
     fn fetch_descriptors(
         &mut self,
         descriptor_service: &str,
-        services: Vec<(String, String)>,
+        services: Vec<DescriptorKey>,
     ) -> Result<u32, String> {
         debug!(
             "Configuration requires descriptors for dynamic services: {:?}",
@@ -51,9 +52,9 @@ impl FilterRoot {
         let request = GetServiceDescriptorsRequest {
             services: services
                 .iter()
-                .map(|(cluster_name, service)| ServiceRef {
-                    cluster_name: cluster_name.clone(),
-                    service: service.clone(),
+                .map(|key| ServiceRef {
+                    cluster_name: key.cluster.clone(),
+                    service: key.service.clone(),
                 })
                 .collect(),
         };
@@ -93,7 +94,7 @@ impl FilterRoot {
         );
 
         for descriptor in response.descriptors {
-            let key = (descriptor.cluster_name, descriptor.service);
+            let key = DescriptorKey::new(descriptor.cluster_name, descriptor.service);
             let fds = FileDescriptorSet::decode(descriptor.file_descriptor_set.as_slice())
                 .map_err(|e| format!("could not decode FileDescriptorSet for {:?}: {}", key, e))?;
             let pool = DescriptorPool::from_file_descriptor_set(fds)
@@ -353,7 +354,7 @@ mod tests {
 
         let mut descriptor_cache = HashMap::new();
         descriptor_cache.insert(
-            ("test-cluster".to_string(), "test.TestService".to_string()),
+            DescriptorKey::new("test-cluster".to_string(), "test.TestService".to_string()),
             pool,
         );
 
@@ -379,7 +380,7 @@ mod tests {
 
     #[test]
     fn test_factory_fails_without_required_descriptors() {
-        let descriptor_cache: HashMap<(String, String), DescriptorPool> = HashMap::new();
+        let descriptor_cache: HashMap<DescriptorKey, DescriptorPool> = HashMap::new();
 
         let config_str = serde_json::json!({
             "services": {

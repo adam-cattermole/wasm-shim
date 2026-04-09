@@ -1,4 +1,5 @@
 use crate::configuration::{FailureMode, Service as ServiceConfig, ServiceType};
+use crate::filter::DescriptorKey;
 use crate::kuadrant::ReqRespCtx;
 use prost_reflect::DescriptorPool;
 use std::{collections::HashMap, rc::Rc, time::Duration};
@@ -37,7 +38,7 @@ impl ServiceInstance {
 
     pub fn from_config(
         service: ServiceConfig,
-        descriptor_cache: &HashMap<(String, String), DescriptorPool>,
+        descriptor_cache: &HashMap<DescriptorKey, DescriptorPool>,
     ) -> Result<Self, ServiceError> {
         match service.service_type {
             ServiceType::Auth => Ok(ServiceInstance::Auth(Rc::new(AuthService::new(
@@ -83,7 +84,7 @@ impl ServiceInstance {
                     ServiceError::Dispatch("Missing grpc_method for Dynamic service".to_string())
                 })?;
 
-                let key = (service.endpoint.clone(), grpc_service.clone());
+                let key = DescriptorKey::new(service.endpoint.clone(), grpc_service.clone());
                 let pool = descriptor_cache
                     .get(&key)
                     .ok_or_else(|| {

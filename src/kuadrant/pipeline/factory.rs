@@ -4,6 +4,7 @@ use crate::data::{
     cel::{Predicate, PredicateVec},
     Expression,
 };
+use crate::filter::DescriptorKey;
 use crate::kuadrant::pipeline::blueprint::{Action, Blueprint, CompileError};
 use crate::kuadrant::pipeline::executor::Pipeline;
 
@@ -61,7 +62,7 @@ impl Default for PipelineFactory {
 impl PipelineFactory {
     pub fn try_from_with_descriptors(
         mut config: PluginConfiguration,
-        descriptor_cache: &HashMap<(String, String), DescriptorPool>,
+        descriptor_cache: &HashMap<DescriptorKey, DescriptorPool>,
     ) -> Result<Self, CompileError> {
         let services: HashMap<String, ServiceInstance> = config
             .services
