@@ -1,11 +1,13 @@
+use std::rc::Rc;
 use std::time::Duration;
 
 use prost::Message;
-use prost_reflect::{DescriptorPool, DynamicMessage};
+use prost_reflect::DynamicMessage;
 use tracing::debug;
 
 use super::{Service, ServiceError};
 use crate::configuration::FailureMode;
+use crate::filter::{DescriptorKey, DescriptorManager};
 use crate::kuadrant::ReqRespCtx;
 
 pub struct DynamicService {
@@ -14,7 +16,7 @@ pub struct DynamicService {
     method: String,
     timeout: Duration,
     failure_mode: FailureMode,
-    descriptor_pool: DescriptorPool,
+    descriptor_manager: Rc<DescriptorManager>,
 }
 
 impl DynamicService {
@@ -24,15 +26,17 @@ impl DynamicService {
         grpc_method: String,
         timeout: Duration,
         failure_mode: FailureMode,
-        descriptor_pool: DescriptorPool,
+        descriptor_manager: Rc<DescriptorManager>,
     ) -> Self {
+        descriptor_manager.add_expected(DescriptorKey::new(endpoint.clone(), grpc_service.clone()));
+
         Self {
             upstream_name: endpoint,
             service_name: grpc_service,
             method: grpc_method,
             timeout,
             failure_mode,
-            descriptor_pool,
+            descriptor_manager,
         }
     }
 
@@ -46,8 +50,12 @@ impl DynamicService {
         ctx: &mut ReqRespCtx,
         json_message: &str,
     ) -> Result<u32, ServiceError> {
-        let service_descriptor = self
-            .descriptor_pool
+        let pool = self
+            .descriptor_manager
+            .get_pool(&self.upstream_name, &self.service_name)
+            .map_err(|e| ServiceError::Dispatch(e.to_string()))?;
+
+        let service_descriptor = pool
             .get_service_by_name(&self.service_name)
             .ok_or_else(|| {
                 ServiceError::Dispatch(format!(
@@ -92,8 +100,12 @@ impl Service for DynamicService {
     type Response = DynamicMessage;
 
     fn parse_message(&self, message: Vec<u8>) -> Result<Self::Response, ServiceError> {
-        let service_descriptor = self
-            .descriptor_pool
+        let pool = self
+            .descriptor_manager
+            .get_pool(&self.upstream_name, &self.service_name)
+            .map_err(|e| ServiceError::Decode(e.to_string()))?;
+
+        let service_descriptor = pool
             .get_service_by_name(&self.service_name)
             .ok_or_else(|| {
                 ServiceError::Decode(format!(
@@ -120,12 +132,14 @@ impl Service for DynamicService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::filter::{DescriptorKey, DescriptorManager};
+    use prost_reflect::DescriptorPool;
     use prost_types::{
         field_descriptor_proto, DescriptorProto, FieldDescriptorProto, FileDescriptorProto,
         FileDescriptorSet, MethodDescriptorProto, ServiceDescriptorProto,
     };
 
-    fn create_test_descriptor_pool() -> DescriptorPool {
+    fn create_test_descriptor_manager() -> Rc<DescriptorManager> {
         let file_descriptor = FileDescriptorProto {
             name: Some("test.proto".to_string()),
             package: Some("test".to_string()),
@@ -168,25 +182,34 @@ mod tests {
             file: vec![file_descriptor],
         };
 
-        DescriptorPool::from_file_descriptor_set(fds).expect("Failed to create descriptor pool")
+        let pool = DescriptorPool::from_file_descriptor_set(fds)
+            .expect("Failed to create descriptor pool");
+
+        let manager = Rc::new(DescriptorManager::default());
+        let key = DescriptorKey::new("test-cluster".to_string(), "test.TestService".to_string());
+        manager.insert_pool(key, pool);
+
+        manager
     }
 
     #[test]
     fn test_dynamic_service_message_building() {
-        let pool = create_test_descriptor_pool();
+        let manager = create_test_descriptor_manager();
         let service = DynamicService::new(
             "test-cluster".to_string(),
             "test.TestService".to_string(),
             "TestMethod".to_string(),
             Duration::from_secs(1),
             FailureMode::Deny,
-            pool,
+            manager.clone(),
         );
 
         let json_request = r#"{ "message": "hello" }"#;
 
-        let service_desc = service
-            .descriptor_pool
+        let pool = manager
+            .get_pool("test-cluster", "test.TestService")
+            .expect("Pool not found");
+        let service_desc = pool
             .get_service_by_name(&service.service_name)
             .expect("Service not found");
         let method_desc = service_desc
@@ -207,18 +230,20 @@ mod tests {
 
     #[test]
     fn test_parse_message_with_valid_response() {
-        let pool = create_test_descriptor_pool();
+        let manager = create_test_descriptor_manager();
         let service = DynamicService::new(
             "test-cluster".to_string(),
             "test.TestService".to_string(),
             "TestMethod".to_string(),
             Duration::from_secs(1),
             FailureMode::Deny,
-            pool,
+            manager.clone(),
         );
 
-        let service_desc = service
-            .descriptor_pool
+        let pool = manager
+            .get_pool("test-cluster", "test.TestService")
+            .expect("Pool not found");
+        let service_desc = pool
             .get_service_by_name(&service.service_name)
             .expect("Service not found");
         let method_desc = service_desc

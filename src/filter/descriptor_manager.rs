@@ -67,11 +67,18 @@ impl DescriptorManager {
         }
     }
 
-    pub fn set_expected(&self, keys: impl IntoIterator<Item = DescriptorKey>) {
-        let mut descriptors = self.descriptors.borrow_mut();
-        for key in keys {
-            descriptors.entry(key).or_insert(DescriptorState::Missing);
-        }
+    pub fn add_expected(&self, key: DescriptorKey) {
+        self.descriptors
+            .borrow_mut()
+            .entry(key)
+            .or_insert(DescriptorState::Missing);
+    }
+
+    pub fn needs_fetch(&self) -> bool {
+        self.descriptors
+            .borrow()
+            .values()
+            .any(|state| matches!(state, DescriptorState::Missing))
     }
 
     pub fn get_pool(
@@ -91,6 +98,14 @@ impl DescriptorManager {
         }
     }
 
+    #[cfg(test)]
+    pub fn insert_pool(&self, key: DescriptorKey, pool: DescriptorPool) {
+        self.descriptors
+            .borrow_mut()
+            .insert(key, DescriptorState::Resolved(Rc::new(pool)));
+    }
+
+    #[cfg(not(test))]
     fn insert_pool(&self, key: DescriptorKey, pool: DescriptorPool) {
         self.descriptors
             .borrow_mut()
@@ -103,21 +118,6 @@ impl DescriptorManager {
             self.descriptors.borrow().get(key),
             Some(DescriptorState::Resolved(_))
         )
-    }
-
-    // todo(@adam-cattermole): temporary until manager handles internally
-    pub fn get_all_pools(&self) -> HashMap<DescriptorKey, DescriptorPool> {
-        self.descriptors
-            .borrow()
-            .iter()
-            .filter_map(|(key, state)| {
-                if let DescriptorState::Resolved(pool) = state {
-                    Some((key.clone(), DescriptorPool::clone(pool)))
-                } else {
-                    None
-                }
-            })
-            .collect()
     }
 
     fn get_missing(&self) -> Vec<DescriptorKey> {

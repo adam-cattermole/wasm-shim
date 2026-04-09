@@ -1,8 +1,7 @@
 use crate::configuration::{FailureMode, Service as ServiceConfig, ServiceType};
-use crate::filter::DescriptorKey;
+use crate::filter::DescriptorManager;
 use crate::kuadrant::ReqRespCtx;
-use prost_reflect::DescriptorPool;
-use std::{collections::HashMap, rc::Rc, time::Duration};
+use std::{rc::Rc, time::Duration};
 
 mod auth;
 mod dynamic;
@@ -38,7 +37,7 @@ impl ServiceInstance {
 
     pub fn from_config(
         service: ServiceConfig,
-        descriptor_cache: &HashMap<DescriptorKey, DescriptorPool>,
+        descriptor_manager: &Rc<DescriptorManager>,
     ) -> Result<Self, ServiceError> {
         match service.service_type {
             ServiceType::Auth => Ok(ServiceInstance::Auth(Rc::new(AuthService::new(
@@ -84,24 +83,13 @@ impl ServiceInstance {
                     ServiceError::Dispatch("Missing grpc_method for Dynamic service".to_string())
                 })?;
 
-                let key = DescriptorKey::new(service.endpoint.clone(), grpc_service.clone());
-                let pool = descriptor_cache
-                    .get(&key)
-                    .ok_or_else(|| {
-                        ServiceError::Dispatch(format!(
-                            "Descriptor pool not found for service {} at endpoint {}",
-                            grpc_service, service.endpoint
-                        ))
-                    })?
-                    .clone();
-
                 Ok(ServiceInstance::Dynamic(Rc::new(DynamicService::new(
                     service.endpoint,
                     grpc_service.clone(),
                     grpc_method.clone(),
                     service.timeout.0,
                     service.failure_mode,
-                    pool,
+                    Rc::clone(descriptor_manager),
                 ))))
             }
         }
@@ -133,7 +121,8 @@ impl TryFrom<ServiceConfig> for ServiceInstance {
     type Error = ServiceError;
 
     fn try_from(service: ServiceConfig) -> Result<Self, Self::Error> {
-        Self::from_config(service, &Default::default())
+        let empty_manager = Rc::new(DescriptorManager::new(String::new()));
+        Self::from_config(service, &empty_manager)
     }
 }
 

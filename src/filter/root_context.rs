@@ -16,7 +16,7 @@ pub struct FilterRoot {
     pub context_id: u32,
     pub pipeline_factory: Rc<PipelineFactory>,
     pub descriptor_manager: Rc<DescriptorManager>,
-    pending_config: Option<PluginConfiguration>,
+    pending_config: Option<(PluginConfiguration, PipelineFactory)>,
 }
 
 impl FilterRoot {
@@ -29,47 +29,32 @@ impl FilterRoot {
         }
     }
 
-    fn activate_config(&mut self, config: PluginConfiguration) -> bool {
-        let descriptor_cache = self.descriptor_manager.get_all_pools();
-
-        match PipelineFactory::try_from_with_descriptors(config, &descriptor_cache) {
-            Ok(factory) => {
-                self.pipeline_factory = Rc::new(factory);
-                true
-            }
-            Err(err) => {
-                error!("failed to compile plugin config: {:?}", err);
-                false
-            }
-        }
+    fn activate_config(&mut self, factory: PipelineFactory) {
+        self.pipeline_factory = Rc::new(factory);
     }
 
     fn process_config(&mut self, config: PluginConfiguration) -> bool {
-        let dynamic_services = config.get_dynamic_services();
-        if dynamic_services.is_empty() {
-            return self.activate_config(config);
-        }
-
-        let missing_descriptors: Vec<_> = dynamic_services
-            .iter()
-            .filter(|key| !self.descriptor_manager.contains_pool(key))
-            .cloned()
-            .collect();
-
-        if missing_descriptors.is_empty() {
-            return self.activate_config(config);
-        }
-
         self.descriptor_manager
             .set_descriptor_service(&config.descriptor_service);
-        self.descriptor_manager.set_expected(dynamic_services);
 
-        if let Err(e) = self.descriptor_manager.fetch_missing(self) {
-            error!("Configuration failed: {}", e);
-            return false;
+        let factory = match PipelineFactory::try_from(config.clone(), &self.descriptor_manager) {
+            Ok(f) => f,
+            Err(err) => {
+                error!("failed to compile plugin config: {:?}", err);
+                return false;
+            }
+        };
+
+        if self.descriptor_manager.needs_fetch() {
+            if let Err(e) = self.descriptor_manager.fetch_missing(self) {
+                error!("Configuration failed: {}", e);
+                return false;
+            }
+            self.pending_config = Some((config, factory));
+        } else {
+            self.activate_config(factory);
         }
 
-        self.pending_config = Some(config);
         true
     }
 
@@ -91,7 +76,7 @@ impl FilterRoot {
         self.descriptor_manager
             .handle_response(token_id, response_bytes)?;
 
-        if let Some(config) = self.pending_config.take() {
+        if let Some((config, factory)) = self.pending_config.take() {
             let missing: Vec<_> = config
                 .get_dynamic_services()
                 .into_iter()
@@ -99,9 +84,9 @@ impl FilterRoot {
                 .collect();
 
             if missing.is_empty() {
-                self.activate_config(config);
+                self.activate_config(factory);
             } else {
-                self.pending_config = Some(config);
+                self.pending_config = Some((config, factory));
             }
         }
 
@@ -194,7 +179,6 @@ mod tests {
         DescriptorProto, FileDescriptorProto, FileDescriptorSet, MethodDescriptorProto,
         ServiceDescriptorProto,
     };
-    use std::collections::HashMap;
 
     #[test]
     fn invalid_json_fails_to_parse() {
@@ -226,7 +210,8 @@ mod tests {
         .to_string();
 
         let config = serde_json::from_slice::<PluginConfiguration>(config_str.as_bytes()).unwrap();
-        let result = PipelineFactory::try_from(config);
+        let descriptor_manager = Rc::new(DescriptorManager::default());
+        let result = PipelineFactory::try_from(config, &descriptor_manager);
         assert!(result.is_err());
     }
 
@@ -265,8 +250,8 @@ mod tests {
         let pool = DescriptorPool::from_file_descriptor_set(fds)
             .expect("Failed to create descriptor pool");
 
-        let mut descriptor_cache = HashMap::new();
-        descriptor_cache.insert(
+        let descriptor_manager = Rc::new(DescriptorManager::default());
+        descriptor_manager.insert_pool(
             DescriptorKey::new("test-cluster".to_string(), "test.TestService".to_string()),
             pool,
         );
@@ -287,13 +272,13 @@ mod tests {
         .to_string();
 
         let config = serde_json::from_slice::<PluginConfiguration>(config_str.as_bytes()).unwrap();
-        let result = PipelineFactory::try_from_with_descriptors(config, &descriptor_cache);
+        let result = PipelineFactory::try_from(config, &descriptor_manager);
         assert!(result.is_ok());
     }
 
     #[test]
-    fn test_factory_fails_without_required_descriptors() {
-        let descriptor_cache: HashMap<DescriptorKey, DescriptorPool> = HashMap::new();
+    fn test_factory_succeeds_without_descriptors() {
+        let descriptor_manager = Rc::new(DescriptorManager::default());
 
         let config_str = serde_json::json!({
             "services": {
@@ -311,7 +296,7 @@ mod tests {
         .to_string();
 
         let config = serde_json::from_slice::<PluginConfiguration>(config_str.as_bytes()).unwrap();
-        let result = PipelineFactory::try_from_with_descriptors(config, &descriptor_cache);
-        assert!(result.is_err());
+        let result = PipelineFactory::try_from(config, &descriptor_manager);
+        assert!(result.is_ok());
     }
 }
