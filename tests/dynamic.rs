@@ -73,6 +73,7 @@ fn it_fetches_descriptors_on_configure() {
             Some(1000),
         )
         .returning(Ok(42))
+        .expect_set_tick_period_millis(Some(2000))
         .execute_and_expect(ReturnType::Bool(true))
         .unwrap();
 

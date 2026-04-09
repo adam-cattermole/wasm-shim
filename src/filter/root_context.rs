@@ -8,6 +8,7 @@ use const_format::formatcp;
 use proxy_wasm::traits::{Context, HttpContext, RootContext};
 use proxy_wasm::types::ContextType;
 use std::rc::Rc;
+use std::time::Duration;
 use tracing::{debug, error, info};
 
 const WASM_SHIM_HEADER: &str = "Kuadrant wasm module";
@@ -16,6 +17,7 @@ pub struct FilterRoot {
     pub context_id: u32,
     pub pipeline_factory: Rc<PipelineFactory>,
     pub descriptor_manager: Rc<DescriptorManager>,
+    tick_enabled: bool,
 }
 
 impl FilterRoot {
@@ -24,6 +26,23 @@ impl FilterRoot {
             context_id,
             pipeline_factory: Rc::new(PipelineFactory::default()),
             descriptor_manager: Rc::new(DescriptorManager::default()),
+            tick_enabled: false,
+        }
+    }
+
+    fn set_tick_enabled(&mut self, enable: bool) {
+        if enable && !self.tick_enabled {
+            if let Err(e) = self.set_tick_period(self.descriptor_manager.tick_period()) {
+                error!("Failed to enable tick: {:?}", e);
+            } else {
+                self.tick_enabled = true;
+            }
+        } else if !enable && self.tick_enabled {
+            if let Err(e) = self.set_tick_period(Duration::ZERO) {
+                error!("Failed to disable tick: {:?}", e);
+            } else {
+                self.tick_enabled = false;
+            }
         }
     }
 
@@ -42,11 +61,14 @@ impl FilterRoot {
         self.descriptor_manager
             .set_descriptor_service(&descriptor_service);
 
-        if self.descriptor_manager.needs_fetch() {
+        let has_dynamic_services = self.descriptor_manager.has_expected();
+        if has_dynamic_services {
             if let Err(e) = self.descriptor_manager.fetch_missing(self) {
                 error!("Failed to fetch descriptors: {}", e);
             }
         }
+
+        self.set_tick_enabled(has_dynamic_services);
 
         true
     }
@@ -116,6 +138,12 @@ impl RootContext for FilterRoot {
 
     fn get_type(&self) -> Option<ContextType> {
         Some(ContextType::HttpContext)
+    }
+
+    fn on_tick(&mut self) {
+        if let Err(e) = self.descriptor_manager.fetch_missing(self) {
+            error!("Failed to fetch missing descriptors on tick: {}", e);
+        }
     }
 }
 

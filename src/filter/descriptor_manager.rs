@@ -74,11 +74,12 @@ impl DescriptorManager {
             .or_insert(DescriptorState::Missing);
     }
 
-    pub fn needs_fetch(&self) -> bool {
-        self.descriptors
-            .borrow()
-            .values()
-            .any(|state| matches!(state, DescriptorState::Missing))
+    pub fn has_expected(&self) -> bool {
+        !self.descriptors.borrow().is_empty()
+    }
+
+    pub fn tick_period(&self) -> Duration {
+        DESCRIPTOR_FETCH_TIMEOUT * 2
     }
 
     pub fn get_pool(
