@@ -1,21 +1,13 @@
 use super::kuadrant_filter::KuadrantFilter;
-use super::{DescriptorKey, DescriptorManager};
+use super::DescriptorManager;
 use crate::configuration::PluginConfiguration;
-use crate::envoy::kuadrant::v1::{
-    GetServiceDescriptorsRequest, GetServiceDescriptorsResponse, ServiceRef,
-};
 use crate::kuadrant::PipelineFactory;
 use crate::metrics::METRICS;
 use crate::{WASM_SHIM_FEATURES, WASM_SHIM_GIT_HASH, WASM_SHIM_PROFILE, WASM_SHIM_VERSION};
 use const_format::formatcp;
-use prost::Message;
-use prost_reflect::DescriptorPool;
-use prost_types::FileDescriptorSet;
 use proxy_wasm::traits::{Context, HttpContext, RootContext};
 use proxy_wasm::types::ContextType;
-use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::time::Duration;
 use tracing::{debug, error, info};
 
 const WASM_SHIM_HEADER: &str = "Kuadrant wasm module";
@@ -24,7 +16,6 @@ pub struct FilterRoot {
     pub context_id: u32,
     pub pipeline_factory: Rc<PipelineFactory>,
     pub descriptor_manager: Rc<DescriptorManager>,
-    pending_requests: HashMap<u32, HashSet<DescriptorKey>>,
     pending_config: Option<PluginConfiguration>,
 }
 
@@ -34,76 +25,8 @@ impl FilterRoot {
             context_id,
             pipeline_factory: Rc::new(PipelineFactory::default()),
             descriptor_manager: Rc::new(DescriptorManager::default()),
-            pending_requests: HashMap::new(),
             pending_config: None,
         }
-    }
-
-    fn fetch_descriptors(
-        &mut self,
-        descriptor_service: &str,
-        services: Vec<DescriptorKey>,
-    ) -> Result<u32, String> {
-        debug!(
-            "Configuration requires descriptors for dynamic services: {:?}",
-            services
-        );
-
-        let request = GetServiceDescriptorsRequest {
-            services: services
-                .iter()
-                .map(|key| ServiceRef {
-                    cluster_name: key.cluster.clone(),
-                    service: key.service.clone(),
-                })
-                .collect(),
-        };
-
-        let mut request_bytes = Vec::new();
-        request
-            .encode(&mut request_bytes)
-            .map_err(|e| format!("could not encode descriptor request: {}", e))?;
-
-        let token = self
-            .dispatch_grpc_call(
-                descriptor_service,
-                "kuadrant.v1.DescriptorService",
-                "GetServiceDescriptors",
-                vec![],
-                Some(&request_bytes),
-                Duration::from_secs(5),
-            )
-            .map_err(|status| format!("could not dispatch descriptor fetch: {:?}", status))?;
-
-        debug!(
-            "Configuration pending: fetching descriptors for {} services (token: {})",
-            services.len(),
-            token
-        );
-
-        Ok(token)
-    }
-
-    fn process_descriptor_response(&mut self, response_bytes: Vec<u8>) -> Result<(), String> {
-        let response = GetServiceDescriptorsResponse::decode(response_bytes.as_slice())
-            .map_err(|e| format!("could not decode descriptor response: {}", e))?;
-
-        debug!(
-            "Configuration: received {} service descriptors",
-            response.descriptors.len()
-        );
-
-        for descriptor in response.descriptors {
-            let key = DescriptorKey::new(descriptor.cluster_name, descriptor.service);
-            let fds = FileDescriptorSet::decode(descriptor.file_descriptor_set.as_slice())
-                .map_err(|e| format!("could not decode FileDescriptorSet for {:?}: {}", key, e))?;
-            let pool = DescriptorPool::from_file_descriptor_set(fds)
-                .map_err(|e| format!("could not build DescriptorPool for {:?}: {}", key, e))?;
-            debug!("Configuration: cached descriptor for {:?}", key);
-            self.descriptor_manager.insert_pool(key, pool);
-        }
-
-        Ok(())
     }
 
     fn activate_config(&mut self, config: PluginConfiguration) -> bool {
@@ -137,24 +60,13 @@ impl FilterRoot {
             return self.activate_config(config);
         }
 
-        let in_flight: HashSet<_> = self.pending_requests.values().flatten().cloned().collect();
+        self.descriptor_manager
+            .set_descriptor_service(&config.descriptor_service);
+        self.descriptor_manager.set_expected(dynamic_services);
 
-        let new_services: Vec<_> = missing_descriptors
-            .into_iter()
-            .filter(|key| !in_flight.contains(key))
-            .collect();
-
-        if !new_services.is_empty() {
-            match self.fetch_descriptors(&config.descriptor_service, new_services.clone()) {
-                Ok(token) => {
-                    self.pending_requests
-                        .insert(token, new_services.into_iter().collect());
-                }
-                Err(e) => {
-                    error!("Configuration failed: {}", e);
-                    return false;
-                }
-            }
+        if let Err(e) = self.descriptor_manager.fetch_missing(self) {
+            error!("Configuration failed: {}", e);
+            return false;
         }
 
         self.pending_config = Some(config);
@@ -167,11 +79,6 @@ impl FilterRoot {
         status_code: u32,
         response_size: usize,
     ) -> Result<(), String> {
-        if self.pending_requests.remove(&token_id).is_none() {
-            debug!("Ignoring grpc response for token {}", token_id);
-            return Ok(());
-        }
-
         if status_code != 0 {
             return Err(format!("descriptor fetch returned status {}", status_code));
         }
@@ -181,7 +88,8 @@ impl FilterRoot {
             .map_err(|status| format!("could not get descriptor response: {:?}", status))?
             .ok_or_else(|| "descriptor response body is empty".to_string())?;
 
-        self.process_descriptor_response(response_bytes)?;
+        self.descriptor_manager
+            .handle_response(token_id, response_bytes)?;
 
         if let Some(config) = self.pending_config.take() {
             let missing: Vec<_> = config
@@ -280,8 +188,11 @@ impl Context for FilterRoot {
 mod tests {
     use super::*;
     use crate::configuration::PluginConfiguration;
+    use crate::filter::DescriptorKey;
+    use prost_reflect::DescriptorPool;
     use prost_types::{
-        DescriptorProto, FileDescriptorProto, MethodDescriptorProto, ServiceDescriptorProto,
+        DescriptorProto, FileDescriptorProto, FileDescriptorSet, MethodDescriptorProto,
+        ServiceDescriptorProto,
     };
     use std::collections::HashMap;
 

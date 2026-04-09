@@ -70,7 +70,7 @@ fn it_fetches_descriptors_on_configure() {
             Some("GetServiceDescriptors"),
             None,
             None,
-            Some(5000),
+            Some(1000),
         )
         .returning(Ok(42))
         .execute_and_expect(ReturnType::Bool(true))

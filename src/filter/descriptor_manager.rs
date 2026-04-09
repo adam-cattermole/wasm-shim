@@ -1,9 +1,16 @@
+use crate::envoy::kuadrant::v1::{
+    GetServiceDescriptorsRequest, GetServiceDescriptorsResponse, ServiceRef,
+};
+use prost::Message;
 use prost_reflect::DescriptorPool;
+use prost_types::FileDescriptorSet;
+use proxy_wasm::traits::Context;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::rc::Rc;
 use std::time::Duration;
+use tracing::{debug, error};
 
 pub const DESCRIPTOR_FETCH_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -53,6 +60,13 @@ pub struct DescriptorManager {
 }
 
 impl DescriptorManager {
+    pub fn set_descriptor_service(&self, service: &str) {
+        let mut current = self.descriptor_service.borrow_mut();
+        if current.as_ref().is_none_or(|s| s != service) {
+            *current = Some(service.to_string());
+        }
+    }
+
     pub fn set_expected(&self, keys: impl IntoIterator<Item = DescriptorKey>) {
         let mut descriptors = self.descriptors.borrow_mut();
         for key in keys {
@@ -104,6 +118,147 @@ impl DescriptorManager {
                 }
             })
             .collect()
+    }
+
+    fn get_missing(&self) -> Vec<DescriptorKey> {
+        self.descriptors
+            .borrow()
+            .iter()
+            .filter_map(|(key, state)| {
+                if matches!(state, DescriptorState::Missing) {
+                    Some(key.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    pub fn fetch_missing(&self, ctx: &dyn Context) -> Result<(), String> {
+        let missing = self.get_missing();
+
+        if missing.is_empty() {
+            return Ok(());
+        }
+
+        let descriptor_service = self
+            .descriptor_service
+            .borrow()
+            .as_ref()
+            .ok_or("descriptor service not configured")?
+            .clone();
+
+        debug!(
+            "Fetching descriptors for {} missing services: {:?}",
+            missing.len(),
+            missing
+        );
+
+        let request = GetServiceDescriptorsRequest {
+            services: missing
+                .iter()
+                .map(|key| ServiceRef {
+                    cluster_name: key.cluster.clone(),
+                    service: key.service.clone(),
+                })
+                .collect(),
+        };
+
+        let mut request_bytes = Vec::new();
+        request
+            .encode(&mut request_bytes)
+            .map_err(|e| format!("could not encode descriptor request: {}", e))?;
+
+        let token = ctx
+            .dispatch_grpc_call(
+                &descriptor_service,
+                "kuadrant.v1.DescriptorService",
+                "GetServiceDescriptors",
+                vec![],
+                Some(&request_bytes),
+                DESCRIPTOR_FETCH_TIMEOUT,
+            )
+            .map_err(|status| format!("could not dispatch descriptor fetch: {:?}", status))?;
+
+        debug!(
+            "Dispatched descriptor fetch for {} services (token: {})",
+            missing.len(),
+            token
+        );
+
+        let mut descriptors = self.descriptors.borrow_mut();
+        for key in missing {
+            descriptors.insert(key, DescriptorState::Pending(token));
+        }
+
+        Ok(())
+    }
+
+    pub fn handle_response(&self, token_id: u32, response_bytes: Vec<u8>) -> Result<(), String> {
+        let has_pending = self
+            .descriptors
+            .borrow()
+            .values()
+            .any(|state| matches!(state, DescriptorState::Pending(t) if *t == token_id));
+
+        if !has_pending {
+            return Err(format!(
+                "Received descriptor response for unknown token {}",
+                token_id
+            ));
+        }
+
+        let response = GetServiceDescriptorsResponse::decode(response_bytes.as_slice())
+            .map_err(|e| format!("could not decode descriptor response: {}", e))?;
+
+        debug!(
+            "Received {} service descriptors",
+            response.descriptors.len()
+        );
+
+        let errors: Vec<_> = response
+            .descriptors
+            .into_iter()
+            .filter_map(|descriptor| {
+                let key = DescriptorKey::new(descriptor.cluster_name, descriptor.service);
+
+                let result = FileDescriptorSet::decode(descriptor.file_descriptor_set.as_slice())
+                    .map_err(|e| format!("could not decode FileDescriptorSet for {:?}: {}", key, e))
+                    .and_then(|fds| {
+                        DescriptorPool::from_file_descriptor_set(fds).map_err(|e| {
+                            format!("could not build DescriptorPool for {:?}: {}", key, e)
+                        })
+                    })
+                    .and_then(|pool| {
+                        if pool.get_service_by_name(&key.service).is_some() {
+                            Ok(pool)
+                        } else {
+                            Err(format!(
+                                "DescriptorPool for {:?} does not contain service {}",
+                                key, key.service
+                            ))
+                        }
+                    });
+
+                match result {
+                    Ok(pool) => {
+                        debug!("Cached descriptor for {:?}", key);
+                        self.insert_pool(key, pool);
+                        None
+                    }
+                    Err(e) => {
+                        error!("{}", e);
+                        Some(e)
+                    }
+                }
+            })
+            .collect();
+
+        if !errors.is_empty() {
+            return Err(format!("Failed to process {} descriptor(s)", errors.len()));
+        }
+
+        Ok(())
     }
 }
 
