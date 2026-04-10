@@ -117,15 +117,6 @@ impl std::fmt::Display for ServiceError {
 
 impl std::error::Error for ServiceError {}
 
-impl TryFrom<ServiceConfig> for ServiceInstance {
-    type Error = ServiceError;
-
-    fn try_from(service: ServiceConfig) -> Result<Self, Self::Error> {
-        let empty_manager = Rc::new(DescriptorManager::new(String::new()));
-        Self::from_config(service, &empty_manager)
-    }
-}
-
 pub trait Service {
     type Response;
 
