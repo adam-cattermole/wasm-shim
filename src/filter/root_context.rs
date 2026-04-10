@@ -72,6 +72,25 @@ impl FilterRoot {
 
         true
     }
+
+    fn handle_descriptor_response(
+        &mut self,
+        token_id: u32,
+        status_code: u32,
+        response_size: usize,
+    ) -> Result<(), String> {
+        if status_code != 0 {
+            return Err(format!("descriptor fetch returned status {}", status_code));
+        }
+
+        let response_bytes = self
+            .get_grpc_call_response_body(0, response_size)
+            .map_err(|status| format!("could not get descriptor response: {:?}", status))?
+            .ok_or_else(|| "descriptor response body is empty".to_string())?;
+
+        self.descriptor_manager
+            .handle_response(token_id, response_bytes)
+    }
 }
 
 impl RootContext for FilterRoot {
@@ -149,29 +168,10 @@ impl RootContext for FilterRoot {
 
 impl Context for FilterRoot {
     fn on_grpc_call_response(&mut self, token_id: u32, status_code: u32, response_size: usize) {
-        if status_code != 0 {
-            error!("Descriptor fetch returned status {}", status_code);
-            return;
-        }
-
-        let response_bytes = match self.get_grpc_call_response_body(0, response_size) {
-            Ok(Some(bytes)) => bytes,
-            Ok(None) => {
-                error!("Descriptor response body is empty");
-                return;
-            }
-            Err(status) => {
-                error!("Could not get descriptor response: {:?}", status);
-                return;
-            }
-        };
-
-        if let Err(e) = self
-            .descriptor_manager
-            .handle_response(token_id, response_bytes)
-        {
+        if let Err(e) = self.handle_descriptor_response(token_id, status_code, response_size) {
             error!("Failed to handle descriptor response: {}", e);
         }
+        self.descriptor_manager.reset_pending(token_id);
     }
 }
 

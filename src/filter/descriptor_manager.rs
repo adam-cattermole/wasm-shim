@@ -187,6 +187,17 @@ impl DescriptorManager {
         Ok(())
     }
 
+    pub fn reset_pending(&self, token_id: u32) {
+        self.descriptors
+            .borrow_mut()
+            .iter_mut()
+            .for_each(|(_, state)| {
+                if matches!(state, DescriptorState::Pending(t) if *t == token_id) {
+                    *state = DescriptorState::Missing;
+                }
+            });
+    }
+
     pub fn handle_response(&self, token_id: u32, response_bytes: Vec<u8>) -> Result<(), String> {
         let has_pending = self
             .descriptors
