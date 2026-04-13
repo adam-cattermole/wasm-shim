@@ -65,7 +65,7 @@ impl RootContext for FilterRoot {
                 None => return false,
             },
             Err(status) => {
-                error!("#{} on_configure: {:?}", self.context_id, status);
+                log::error!("#{} on_configure: {:?}", self.context_id, status);
                 return false;
             }
         };
@@ -89,7 +89,7 @@ impl RootContext for FilterRoot {
                 }
             }
             Err(e) => {
-                error!("failed to parse plugin config: {}", e);
+                log::error!("failed to parse plugin config: {}", e);
                 return false;
             }
         }

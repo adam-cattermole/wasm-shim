@@ -65,6 +65,7 @@ pub fn init_observability(use_tracing: bool, log_level: Option<&str>) {
         if let Err(e) = otel_handle.reload(otel_filter) {
             log::error!("Failed to reload OpenTelemetry filter: {:?}", e);
         }
+        update_log_level();
     } else {
         // Initialise global tracing subscriber and store handles to the filters
         let processor_handle = processor::SpanProcessorHandle;
