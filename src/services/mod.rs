@@ -1,12 +1,15 @@
 use crate::configuration::{FailureMode, Service as ServiceConfig, ServiceType};
+use crate::filter::DescriptorManager;
 use crate::kuadrant::ReqRespCtx;
 use std::{rc::Rc, time::Duration};
 
 mod auth;
+mod dynamic;
 pub mod rate_limit;
 mod tracing;
 
 pub use auth::AuthService;
+pub use dynamic::DynamicService;
 pub use rate_limit::RateLimitService;
 pub use tracing::TracingService;
 
@@ -17,6 +20,7 @@ pub enum ServiceInstance {
     RateLimitCheck(Rc<RateLimitService>),
     RateLimitReport(Rc<RateLimitService>),
     Tracing(Option<Rc<TracingService>>),
+    Dynamic(Rc<DynamicService>),
 }
 
 impl ServiceInstance {
@@ -27,35 +31,14 @@ impl ServiceInstance {
             ServiceInstance::RateLimitCheck(service) => service.failure_mode(),
             ServiceInstance::RateLimitReport(service) => service.failure_mode(),
             ServiceInstance::Tracing(_) => FailureMode::Allow,
+            ServiceInstance::Dynamic(service) => service.failure_mode(),
         }
     }
-}
 
-#[derive(Debug)]
-pub enum ServiceError {
-    Dispatch(String),
-    Decode(String),
-    Retrieval(String),
-}
-
-impl std::fmt::Display for ServiceError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ServiceError::Dispatch(msg) => write!(f, "Failed to dispatch gRPC call: {}", msg),
-            ServiceError::Decode(msg) => write!(f, "Failed to decode response: {}", msg),
-            ServiceError::Retrieval(msg) => {
-                write!(f, "Failed to retrieve gRPC response: {}", msg)
-            }
-        }
-    }
-}
-
-impl std::error::Error for ServiceError {}
-
-impl TryFrom<ServiceConfig> for ServiceInstance {
-    type Error = ServiceError;
-
-    fn try_from(service: ServiceConfig) -> Result<Self, Self::Error> {
+    pub fn from_config(
+        service: ServiceConfig,
+        descriptor_manager: &Rc<DescriptorManager>,
+    ) -> Result<Self, ServiceError> {
         match service.service_type {
             ServiceType::Auth => Ok(ServiceInstance::Auth(Rc::new(AuthService::new(
                 service.endpoint,
@@ -92,9 +75,47 @@ impl TryFrom<ServiceConfig> for ServiceInstance {
             ServiceType::Tracing => Ok(ServiceInstance::Tracing(Some(Rc::new(
                 TracingService::new(service.endpoint, service.timeout.0),
             )))),
+            ServiceType::Dynamic => {
+                let grpc_service = service.grpc_service.as_ref().ok_or_else(|| {
+                    ServiceError::Dispatch("Missing grpc_service for Dynamic service".to_string())
+                })?;
+                let grpc_method = service.grpc_method.as_ref().ok_or_else(|| {
+                    ServiceError::Dispatch("Missing grpc_method for Dynamic service".to_string())
+                })?;
+
+                Ok(ServiceInstance::Dynamic(Rc::new(DynamicService::new(
+                    service.endpoint,
+                    grpc_service.clone(),
+                    grpc_method.clone(),
+                    service.timeout.0,
+                    service.failure_mode,
+                    Rc::clone(descriptor_manager),
+                ))))
+            }
         }
     }
 }
+
+#[derive(Debug)]
+pub enum ServiceError {
+    Dispatch(String),
+    Decode(String),
+    Retrieval(String),
+}
+
+impl std::fmt::Display for ServiceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ServiceError::Dispatch(msg) => write!(f, "Failed to dispatch gRPC call: {}", msg),
+            ServiceError::Decode(msg) => write!(f, "Failed to decode response: {}", msg),
+            ServiceError::Retrieval(msg) => {
+                write!(f, "Failed to retrieve gRPC response: {}", msg)
+            }
+        }
+    }
+}
+
+impl std::error::Error for ServiceError {}
 
 pub trait Service {
     type Response;

@@ -251,6 +251,9 @@ impl Blueprint {
                             .push(Box::new(ExportTracesTask::new(ctx, Rc::clone(service))));
                     }
                 }
+                ServiceInstance::Dynamic(_) => {
+                    todo!("DynamicTask not yet implemented")
+                }
             }
         }
 

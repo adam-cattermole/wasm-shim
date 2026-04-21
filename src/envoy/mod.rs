@@ -105,6 +105,13 @@ pub mod xds {
     }
 }
 
+#[allow(dead_code)]
+pub mod kuadrant {
+    pub mod v1 {
+        include!("kuadrant.v1.rs");
+    }
+}
+
 #[allow(dead_code, clippy::enum_variant_names)]
 pub mod validate {
     include!("validate.rs");
