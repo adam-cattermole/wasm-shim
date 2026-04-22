@@ -63,6 +63,7 @@ enum DescriptorState {
 #[derive(Default)]
 pub struct DescriptorManager {
     pools: RefCell<HashMap<u64, Rc<DescriptorPool>>>,
+    embedded: RefCell<HashMap<String, u64>>,
     descriptors: RefCell<HashMap<DescriptorKey, DescriptorState>>,
     descriptor_service: RefCell<Option<String>>,
 }
@@ -104,10 +105,27 @@ impl DescriptorManager {
                 DescriptorState::Resolved(hash) => self.pools.borrow().get(hash).map(Rc::clone),
                 _ => None,
             })
+            .or_else(|| {
+                self.embedded
+                    .borrow()
+                    .get(service)
+                    .and_then(|hash| self.pools.borrow().get(hash).map(Rc::clone))
+            })
             .ok_or_else(|| DescriptorError::NotAvailable {
                 cluster: cluster.to_string(),
                 service: service.to_string(),
             })
+    }
+
+    pub fn register_embedded(&self, service: String, fds_bytes: &[u8], pool: DescriptorPool) {
+        let content_hash = hash_bytes(fds_bytes);
+
+        self.pools
+            .borrow_mut()
+            .entry(content_hash)
+            .or_insert_with(|| Rc::new(pool));
+
+        self.embedded.borrow_mut().insert(service, content_hash);
     }
 
     #[cfg(test)]
@@ -414,6 +432,187 @@ mod tests {
         let result2 = manager.get_pool("cluster-b", "test.TestService").unwrap();
 
         assert!(Rc::ptr_eq(&result1, &result2));
+
+        assert_eq!(manager.pools.borrow().len(), 1);
+    }
+
+    #[test]
+    fn test_embedded_descriptors() {
+        let manager = DescriptorManager::default();
+
+        let file_descriptor = FileDescriptorProto {
+            name: Some("test.proto".to_string()),
+            package: Some("test".to_string()),
+            service: vec![ServiceDescriptorProto {
+                name: Some("TestService".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let fds = FileDescriptorSet {
+            file: vec![file_descriptor],
+        };
+
+        let mut fds_bytes = Vec::new();
+        fds.encode(&mut fds_bytes).unwrap();
+
+        let pool = DescriptorPool::from_file_descriptor_set(
+            FileDescriptorSet::decode(fds_bytes.as_slice()).unwrap(),
+        )
+        .unwrap();
+
+        manager.register_embedded("test.TestService".to_string(), &fds_bytes, pool);
+
+        let result = manager.get_pool("any-cluster", "test.TestService");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_remote_overrides_embedded() {
+        let manager = DescriptorManager::default();
+
+        let embedded_fd = FileDescriptorProto {
+            name: Some("embedded.proto".to_string()),
+            package: Some("test".to_string()),
+            service: vec![ServiceDescriptorProto {
+                name: Some("TestService".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let remote_fd = FileDescriptorProto {
+            name: Some("remote.proto".to_string()),
+            package: Some("test".to_string()),
+            service: vec![ServiceDescriptorProto {
+                name: Some("TestService".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let embedded_fds = FileDescriptorSet {
+            file: vec![embedded_fd],
+        };
+        let remote_fds = FileDescriptorSet {
+            file: vec![remote_fd],
+        };
+
+        let mut embedded_bytes = Vec::new();
+        embedded_fds.encode(&mut embedded_bytes).unwrap();
+        let mut remote_bytes = Vec::new();
+        remote_fds.encode(&mut remote_bytes).unwrap();
+
+        let embedded_pool = DescriptorPool::from_file_descriptor_set(
+            FileDescriptorSet::decode(embedded_bytes.as_slice()).unwrap(),
+        )
+        .unwrap();
+        let remote_pool = DescriptorPool::from_file_descriptor_set(
+            FileDescriptorSet::decode(remote_bytes.as_slice()).unwrap(),
+        )
+        .unwrap();
+
+        manager.register_embedded(
+            "test.TestService".to_string(),
+            &embedded_bytes,
+            embedded_pool,
+        );
+
+        let key = DescriptorKey::new("test-cluster".to_string(), "test.TestService".to_string());
+        manager.insert_pool_from_bytes(key, &remote_bytes, remote_pool);
+
+        let result = manager
+            .get_pool("test-cluster", "test.TestService")
+            .unwrap();
+
+        assert_eq!(
+            result.services().next().unwrap().parent_file().name(),
+            "remote.proto"
+        );
+    }
+
+    #[test]
+    fn test_embedded_used_when_no_cluster_config() {
+        let manager = DescriptorManager::default();
+
+        let embedded_fd = FileDescriptorProto {
+            name: Some("embedded.proto".to_string()),
+            package: Some("test".to_string()),
+            service: vec![ServiceDescriptorProto {
+                name: Some("TestService".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let embedded_fds = FileDescriptorSet {
+            file: vec![embedded_fd],
+        };
+
+        let mut embedded_bytes = Vec::new();
+        embedded_fds.encode(&mut embedded_bytes).unwrap();
+
+        let embedded_pool = DescriptorPool::from_file_descriptor_set(
+            FileDescriptorSet::decode(embedded_bytes.as_slice()).unwrap(),
+        )
+        .unwrap();
+
+        manager.register_embedded(
+            "test.TestService".to_string(),
+            &embedded_bytes,
+            embedded_pool,
+        );
+
+        let result = manager.get_pool("any-cluster", "test.TestService").unwrap();
+
+        assert_eq!(
+            result.services().next().unwrap().parent_file().name(),
+            "embedded.proto"
+        );
+    }
+
+    #[test]
+    fn test_embedded_and_remote_deduplicate_when_identical() {
+        let manager = DescriptorManager::default();
+
+        let file_descriptor = FileDescriptorProto {
+            name: Some("test.proto".to_string()),
+            package: Some("test".to_string()),
+            service: vec![ServiceDescriptorProto {
+                name: Some("TestService".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let fds = FileDescriptorSet {
+            file: vec![file_descriptor],
+        };
+
+        let mut fds_bytes = Vec::new();
+        fds.encode(&mut fds_bytes).unwrap();
+
+        let embedded_pool = DescriptorPool::from_file_descriptor_set(
+            FileDescriptorSet::decode(fds_bytes.as_slice()).unwrap(),
+        )
+        .unwrap();
+        let remote_pool = DescriptorPool::from_file_descriptor_set(
+            FileDescriptorSet::decode(fds_bytes.as_slice()).unwrap(),
+        )
+        .unwrap();
+
+        manager.register_embedded("test.TestService".to_string(), &fds_bytes, embedded_pool);
+
+        let key = DescriptorKey::new("test-cluster".to_string(), "test.TestService".to_string());
+        manager.insert_pool_from_bytes(key, &fds_bytes, remote_pool);
+
+        let embedded_result = manager.get_pool("any-cluster", "test.TestService").unwrap();
+        let remote_result = manager
+            .get_pool("test-cluster", "test.TestService")
+            .unwrap();
+
+        assert!(Rc::ptr_eq(&embedded_result, &remote_result));
 
         assert_eq!(manager.pools.borrow().len(), 1);
     }
