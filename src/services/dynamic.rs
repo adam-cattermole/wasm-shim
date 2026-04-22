@@ -10,6 +10,8 @@ use crate::configuration::FailureMode;
 use crate::filter::{DescriptorKey, DescriptorManager};
 use crate::kuadrant::ReqRespCtx;
 
+pub mod converters;
+
 pub struct DynamicService {
     upstream_name: String,
     service_name: String,
