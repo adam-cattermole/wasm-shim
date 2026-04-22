@@ -60,12 +60,51 @@ enum DescriptorState {
     Resolved(u64),
 }
 
-#[derive(Default)]
 pub struct DescriptorManager {
     pools: RefCell<HashMap<u64, Rc<DescriptorPool>>>,
     embedded: RefCell<HashMap<String, u64>>,
     descriptors: RefCell<HashMap<DescriptorKey, DescriptorState>>,
     descriptor_service: RefCell<Option<String>>,
+}
+
+impl Default for DescriptorManager {
+    fn default() -> Self {
+        let manager = Self {
+            pools: Default::default(),
+            embedded: Default::default(),
+            descriptors: Default::default(),
+            descriptor_service: Default::default(),
+        };
+
+        match embedded_descriptors::get_ratelimit_pool() {
+            Ok((pool, bytes)) => {
+                manager.register_embedded(
+                    embedded_descriptors::RATELIMIT_SERVICE.to_string(),
+                    bytes,
+                    &pool,
+                );
+                manager.register_embedded(
+                    embedded_descriptors::KUADRANT_RATELIMIT_SERVICE.to_string(),
+                    bytes,
+                    &pool,
+                );
+            }
+            Err(e) => error!("failed to load embedded ratelimit descriptors: {}", e),
+        }
+
+        match embedded_descriptors::get_auth_pool() {
+            Ok((pool, bytes)) => {
+                manager.register_embedded(
+                    embedded_descriptors::AUTH_SERVICE.to_string(),
+                    bytes,
+                    &pool,
+                );
+            }
+            Err(e) => error!("failed to load embedded auth descriptors: {}", e),
+        }
+
+        manager
+    }
 }
 
 impl DescriptorManager {
@@ -117,13 +156,13 @@ impl DescriptorManager {
             })
     }
 
-    pub fn register_embedded(&self, service: String, fds_bytes: &[u8], pool: DescriptorPool) {
+    pub fn register_embedded(&self, service: String, fds_bytes: &[u8], pool: &DescriptorPool) {
         let content_hash = hash_bytes(fds_bytes);
 
         self.pools
             .borrow_mut()
             .entry(content_hash)
-            .or_insert_with(|| Rc::new(pool));
+            .or_insert_with(|| Rc::new(pool.clone()));
 
         self.embedded.borrow_mut().insert(service, content_hash);
     }
@@ -306,6 +345,41 @@ impl DescriptorManager {
     }
 }
 
+mod embedded_descriptors {
+    use prost::Message;
+    use prost_reflect::DescriptorPool;
+    use prost_types::FileDescriptorSet;
+
+    const RATELIMIT_DESCRIPTORS: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/ratelimit_descriptors.bin"));
+    const AUTH_DESCRIPTORS: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/auth_descriptors.bin"));
+
+    pub const RATELIMIT_SERVICE: &str = "envoy.service.ratelimit.v3.RateLimitService";
+    pub const KUADRANT_RATELIMIT_SERVICE: &str = "kuadrant.service.ratelimit.v1.RateLimitService";
+    pub const AUTH_SERVICE: &str = "envoy.service.auth.v3.Authorization";
+
+    pub fn get_ratelimit_pool() -> Result<(DescriptorPool, &'static [u8]), String> {
+        let fds = FileDescriptorSet::decode(RATELIMIT_DESCRIPTORS)
+            .map_err(|e| format!("Failed to decode ratelimit descriptors: {}", e))?;
+
+        let pool = DescriptorPool::from_file_descriptor_set(fds)
+            .map_err(|e| format!("Failed to create ratelimit descriptor pool: {}", e))?;
+
+        Ok((pool, RATELIMIT_DESCRIPTORS))
+    }
+
+    pub fn get_auth_pool() -> Result<(DescriptorPool, &'static [u8]), String> {
+        let fds = FileDescriptorSet::decode(AUTH_DESCRIPTORS)
+            .map_err(|e| format!("Failed to decode auth descriptors: {}", e))?;
+
+        let pool = DescriptorPool::from_file_descriptor_set(fds)
+            .map_err(|e| format!("Failed to create auth descriptor pool: {}", e))?;
+
+        Ok((pool, AUTH_DESCRIPTORS))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,6 +465,7 @@ mod tests {
     #[test]
     fn test_deduplication_same_descriptor_bytes() {
         let manager = DescriptorManager::default();
+        let initial_pool_count = manager.pools.borrow().len();
 
         let file_descriptor = FileDescriptorProto {
             name: Some("test.proto".to_string()),
@@ -433,7 +508,7 @@ mod tests {
 
         assert!(Rc::ptr_eq(&result1, &result2));
 
-        assert_eq!(manager.pools.borrow().len(), 1);
+        assert_eq!(manager.pools.borrow().len(), initial_pool_count + 1);
     }
 
     #[test]
@@ -462,7 +537,7 @@ mod tests {
         )
         .unwrap();
 
-        manager.register_embedded("test.TestService".to_string(), &fds_bytes, pool);
+        manager.register_embedded("test.TestService".to_string(), &fds_bytes, &pool);
 
         let result = manager.get_pool("any-cluster", "test.TestService");
         assert!(result.is_ok());
@@ -516,7 +591,7 @@ mod tests {
         manager.register_embedded(
             "test.TestService".to_string(),
             &embedded_bytes,
-            embedded_pool,
+            &embedded_pool,
         );
 
         let key = DescriptorKey::new("test-cluster".to_string(), "test.TestService".to_string());
@@ -561,7 +636,7 @@ mod tests {
         manager.register_embedded(
             "test.TestService".to_string(),
             &embedded_bytes,
-            embedded_pool,
+            &embedded_pool,
         );
 
         let result = manager.get_pool("any-cluster", "test.TestService").unwrap();
@@ -575,6 +650,7 @@ mod tests {
     #[test]
     fn test_embedded_and_remote_deduplicate_when_identical() {
         let manager = DescriptorManager::default();
+        let initial_pool_count = manager.pools.borrow().len();
 
         let file_descriptor = FileDescriptorProto {
             name: Some("test.proto".to_string()),
@@ -602,7 +678,7 @@ mod tests {
         )
         .unwrap();
 
-        manager.register_embedded("test.TestService".to_string(), &fds_bytes, embedded_pool);
+        manager.register_embedded("test.TestService".to_string(), &fds_bytes, &embedded_pool);
 
         let key = DescriptorKey::new("test-cluster".to_string(), "test.TestService".to_string());
         manager.insert_pool_from_bytes(key, &fds_bytes, remote_pool);
@@ -614,6 +690,6 @@ mod tests {
 
         assert!(Rc::ptr_eq(&embedded_result, &remote_result));
 
-        assert_eq!(manager.pools.borrow().len(), 1);
+        assert_eq!(manager.pools.borrow().len(), initial_pool_count + 1);
     }
 }

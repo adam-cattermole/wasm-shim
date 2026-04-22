@@ -57,6 +57,9 @@ fn set_git_hash(env: &str) {
 fn generate_protobuf() -> Result<(), Box<dyn Error>> {
     println!("Starting protobuf generation...");
 
+    let out_dir = std::env::var("OUT_DIR")?;
+
+    // Generate Rust code for all protos
     let mut prost_build = prost_build::Config::new();
     prost_build.out_dir("src/envoy");
 
@@ -112,5 +115,42 @@ fn generate_protobuf() -> Result<(), Box<dyn Error>> {
     }
 
     result?;
+
+    // Generate separate FileDescriptorSets for embedded services
+    println!("Generating embedded descriptors...");
+
+    // RateLimit service descriptors (both envoy and kuadrant services, same messages)
+    let mut ratelimit_config = prost_build::Config::new();
+    ratelimit_config.file_descriptor_set_path(format!("{}/ratelimit_descriptors.bin", out_dir));
+    ratelimit_config.compile_protos(
+        &[
+            "vendor-protobufs/data-plane-api/envoy/service/ratelimit/v3/rls.proto",
+            "vendor-protobufs/kuadrant/service/ratelimit/v1/ratelimit.proto",
+        ],
+        &[
+            "vendor-protobufs/data-plane-api/",
+            "vendor-protobufs/protoc-gen-validate/",
+            "vendor-protobufs/udpa/",
+            "vendor-protobufs/xds/",
+            "vendor-protobufs/googleapis/",
+            "vendor-protobufs/kuadrant/",
+        ],
+    )?;
+
+    // Auth service descriptors (don't generate Rust code, just descriptor set)
+    let mut auth_config = prost_build::Config::new();
+    auth_config.file_descriptor_set_path(format!("{}/auth_descriptors.bin", out_dir));
+    auth_config.compile_protos(
+        &["vendor-protobufs/data-plane-api/envoy/service/auth/v3/external_auth.proto"],
+        &[
+            "vendor-protobufs/data-plane-api/",
+            "vendor-protobufs/protoc-gen-validate/",
+            "vendor-protobufs/udpa/",
+            "vendor-protobufs/xds/",
+            "vendor-protobufs/googleapis/",
+        ],
+    )?;
+
+    println!("Embedded descriptor generation completed!");
     Ok(())
 }
