@@ -1,6 +1,9 @@
+use std::cell::OnceCell;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
+use cel::{Context, Env, Program};
 use prost::Message;
 use prost_reflect::DynamicMessage;
 use tracing::debug;
@@ -12,6 +15,8 @@ use crate::kuadrant::ReqRespCtx;
 
 pub mod converters;
 
+use converters::{DescriptorConverter, MessageConverter};
+
 pub struct DynamicService {
     upstream_name: String,
     service_name: String,
@@ -19,6 +24,7 @@ pub struct DynamicService {
     timeout: Duration,
     failure_mode: FailureMode,
     descriptor_manager: Rc<DescriptorManager>,
+    cel_env: OnceCell<Arc<Env>>,
 }
 
 impl DynamicService {
@@ -39,6 +45,7 @@ impl DynamicService {
             timeout,
             failure_mode,
             descriptor_manager,
+            cel_env: Default::default(),
         }
     }
 
@@ -50,7 +57,7 @@ impl DynamicService {
     pub fn dispatch_dynamic(
         &self,
         ctx: &mut ReqRespCtx,
-        json_message: &str,
+        message_expression: &str,
     ) -> Result<u32, ServiceError> {
         let pool = self
             .descriptor_manager
@@ -75,18 +82,42 @@ impl DynamicService {
                 ))
             })?;
         let input_descriptor = method_descriptor.input();
-        // todo(@adam-cattermole): To be replaced with CEL construction
-        debug!("Deserializing JSON into dynamic message");
-        let mut deserializer = serde_json::Deserializer::from_str(json_message);
-        let request_message = DynamicMessage::deserialize(input_descriptor, &mut deserializer)
-            .map_err(|e| ServiceError::Dispatch(format!("Failed to deserialize JSON: {}", e)))?;
-        deserializer
-            .end()
-            .map_err(|e| ServiceError::Dispatch(format!("JSON deserializer error: {}", e)))?;
+
+        debug!("Building message from CEL expression");
+        let env = match self.cel_env.get() {
+            Some(env) => Arc::clone(env),
+            None => {
+                let mut new_env = Env::stdlib();
+                DescriptorConverter::register_message_types(&mut new_env, &input_descriptor)
+                    .map_err(|e| {
+                        ServiceError::Dispatch(format!("Failed to register message types: {}", e))
+                    })?;
+                let env_arc = Arc::new(new_env);
+                let _ = self.cel_env.set(Arc::clone(&env_arc));
+                env_arc
+            }
+        };
+
+        let cel_ctx = Context::with_env(env);
+
+        let program = Program::compile(message_expression).map_err(|e| {
+            ServiceError::Dispatch(format!("Failed to compile CEL expression: {}", e))
+        })?;
+
+        let cel_value = program.execute(&cel_ctx).map_err(|e| {
+            ServiceError::Dispatch(format!("Failed to execute CEL expression: {}", e))
+        })?;
+
+        let request_message =
+            MessageConverter::cel_to_dynamic_message(&cel_value, &input_descriptor).map_err(
+                |e| ServiceError::Dispatch(format!("Failed to convert CEL to message: {}", e)),
+            )?;
+
         let mut message_bytes = Vec::new();
         request_message
             .encode(&mut message_bytes)
             .map_err(|e| ServiceError::Dispatch(format!("Failed to encode message: {}", e)))?;
+
         self.dispatch(
             ctx,
             &self.upstream_name,
@@ -195,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dynamic_service_message_building() {
+    fn test_dynamic_service_cel_message_building() {
         let manager = create_test_descriptor_manager();
         let service = DynamicService::new(
             "test-cluster".to_string(),
@@ -206,7 +237,7 @@ mod tests {
             manager.clone(),
         );
 
-        let json_request = r#"{ "message": "hello" }"#;
+        let cel_expression = r#"test.TestRequest { message: "hello" }"#;
 
         let pool = manager
             .get_pool("test-cluster", "test.TestService")
@@ -220,14 +251,28 @@ mod tests {
             .expect("Method not found");
         let input_desc = method_desc.input();
 
-        let mut deserializer = serde_json::Deserializer::from_str(json_request);
-        let message = DynamicMessage::deserialize(input_desc, &mut deserializer)
-            .expect("Failed to deserialize");
-        deserializer.end().expect("Deserializer should end cleanly");
+        let mut env = Env::stdlib();
+        DescriptorConverter::register_message_types(&mut env, &input_desc)
+            .expect("Failed to register types");
+
+        let cel_ctx = Context::with_env(Arc::new(env));
+        let program = Program::compile(cel_expression).expect("Failed to compile");
+        let cel_value = program.execute(&cel_ctx).expect("Failed to execute");
+
+        let message = MessageConverter::cel_to_dynamic_message(&cel_value, &input_desc)
+            .expect("Failed to convert");
 
         let mut bytes = Vec::new();
         message.encode(&mut bytes).expect("Failed to encode");
         assert!(!bytes.is_empty());
+
+        let field_value = message
+            .get_field_by_name("message")
+            .expect("message field not found");
+        assert_eq!(
+            field_value.as_ref(),
+            &prost_reflect::Value::String("hello".to_string())
+        );
     }
 
     #[test]
