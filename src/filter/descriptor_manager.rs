@@ -6,8 +6,9 @@ use prost_reflect::DescriptorPool;
 use prost_types::FileDescriptorSet;
 use proxy_wasm::traits::Context;
 use std::cell::RefCell;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::hash::Hash;
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::time::Duration;
 use tracing::{debug, error};
@@ -47,14 +48,21 @@ impl std::fmt::Display for DescriptorError {
 
 impl std::error::Error for DescriptorError {}
 
+fn hash_bytes(bytes: &[u8]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
+}
+
 enum DescriptorState {
     Missing,
     Pending(u32),
-    Resolved(Rc<DescriptorPool>),
+    Resolved(u64),
 }
 
 #[derive(Default)]
 pub struct DescriptorManager {
+    pools: RefCell<HashMap<u64, Rc<DescriptorPool>>>,
     descriptors: RefCell<HashMap<DescriptorKey, DescriptorState>>,
     descriptor_service: RefCell<Option<String>>,
 }
@@ -88,29 +96,42 @@ impl DescriptorManager {
         service: &str,
     ) -> Result<Rc<DescriptorPool>, DescriptorError> {
         let key = DescriptorKey::new(cluster.to_string(), service.to_string());
-        let descriptors = self.descriptors.borrow();
 
-        match descriptors.get(&key) {
-            Some(DescriptorState::Resolved(pool)) => Ok(Rc::clone(pool)),
-            _ => Err(DescriptorError::NotAvailable {
+        self.descriptors
+            .borrow()
+            .get(&key)
+            .and_then(|state| match state {
+                DescriptorState::Resolved(hash) => self.pools.borrow().get(hash).map(Rc::clone),
+                _ => None,
+            })
+            .ok_or_else(|| DescriptorError::NotAvailable {
                 cluster: cluster.to_string(),
                 service: service.to_string(),
-            }),
-        }
+            })
     }
 
     #[cfg(test)]
     pub fn insert_pool(&self, key: DescriptorKey, pool: DescriptorPool) {
+        let mut hasher = DefaultHasher::new();
+        key.hash(&mut hasher);
+        let hash = hasher.finish();
+        self.pools.borrow_mut().insert(hash, Rc::new(pool));
         self.descriptors
             .borrow_mut()
-            .insert(key, DescriptorState::Resolved(Rc::new(pool)));
+            .insert(key, DescriptorState::Resolved(hash));
     }
 
-    #[cfg(not(test))]
-    fn insert_pool(&self, key: DescriptorKey, pool: DescriptorPool) {
+    fn insert_pool_from_bytes(&self, key: DescriptorKey, fds_bytes: &[u8], pool: DescriptorPool) {
+        let content_hash = hash_bytes(fds_bytes);
+
+        self.pools
+            .borrow_mut()
+            .entry(content_hash)
+            .or_insert_with(|| Rc::new(pool));
+
         self.descriptors
             .borrow_mut()
-            .insert(key, DescriptorState::Resolved(Rc::new(pool)));
+            .insert(key, DescriptorState::Resolved(content_hash));
     }
 
     fn get_missing(&self) -> Vec<DescriptorKey> {
@@ -225,8 +246,9 @@ impl DescriptorManager {
             .into_iter()
             .filter_map(|descriptor| {
                 let key = DescriptorKey::new(descriptor.cluster_name, descriptor.service);
+                let fds_bytes = descriptor.file_descriptor_set;
 
-                let result = FileDescriptorSet::decode(descriptor.file_descriptor_set.as_slice())
+                let result = FileDescriptorSet::decode(fds_bytes.as_slice())
                     .map_err(|e| format!("could not decode FileDescriptorSet for {:?}: {}", key, e))
                     .and_then(|fds| {
                         DescriptorPool::from_file_descriptor_set(fds).map_err(|e| {
@@ -247,7 +269,7 @@ impl DescriptorManager {
                 match result {
                     Ok(pool) => {
                         debug!("Cached descriptor for {:?}", key);
-                        self.insert_pool(key, pool);
+                        self.insert_pool_from_bytes(key, &fds_bytes, pool);
                         None
                     }
                     Err(e) => {
@@ -346,5 +368,53 @@ mod tests {
         let retrieved_pool = result.unwrap();
         let service = retrieved_pool.get_service_by_name("test.TestService");
         assert!(service.is_some());
+    }
+
+    #[test]
+    fn test_deduplication_same_descriptor_bytes() {
+        let manager = DescriptorManager::default();
+
+        let file_descriptor = FileDescriptorProto {
+            name: Some("test.proto".to_string()),
+            package: Some("test".to_string()),
+            message_type: vec![DescriptorProto {
+                name: Some("TestMessage".to_string()),
+                ..Default::default()
+            }],
+            service: vec![ServiceDescriptorProto {
+                name: Some("TestService".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let fds = FileDescriptorSet {
+            file: vec![file_descriptor],
+        };
+
+        let mut fds_bytes = Vec::new();
+        fds.encode(&mut fds_bytes).unwrap();
+
+        let pool1 = DescriptorPool::from_file_descriptor_set(
+            FileDescriptorSet::decode(fds_bytes.as_slice()).unwrap(),
+        )
+        .unwrap();
+        let pool2 = DescriptorPool::from_file_descriptor_set(
+            FileDescriptorSet::decode(fds_bytes.as_slice()).unwrap(),
+        )
+        .unwrap();
+
+        let key1 = DescriptorKey::new("cluster-a".to_string(), "test.TestService".to_string());
+        let key2 = DescriptorKey::new("cluster-b".to_string(), "test.TestService".to_string());
+
+        manager.insert_pool_from_bytes(key1, &fds_bytes, pool1);
+        manager.insert_pool_from_bytes(key2, &fds_bytes, pool2);
+
+        let result1 = manager.get_pool("cluster-a", "test.TestService").unwrap();
+        let result2 = manager.get_pool("cluster-b", "test.TestService").unwrap();
+
+        assert!(Rc::ptr_eq(&result1, &result2));
+
+        assert_eq!(manager.pools.borrow().len(), 1);
     }
 }
