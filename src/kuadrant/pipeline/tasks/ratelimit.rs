@@ -1,9 +1,8 @@
 use crate::data::attribute::{AttributeError, AttributeState};
 use crate::data::cel::errors::EvaluationError;
 use crate::data::cel::{Expression, Predicate, PredicateVec};
-use crate::data::Headers;
 use crate::envoy::rate_limit_descriptor::Entry;
-use crate::envoy::{rate_limit_response, HeaderValue, RateLimitDescriptor, RateLimitResponse};
+use crate::envoy::{rate_limit_response, RateLimitDescriptor};
 use crate::kuadrant::pipeline::blueprint::ConditionalData;
 use crate::kuadrant::pipeline::tasks::{
     HeaderOperation, HeadersType, ModifyHeadersTask, SendReplyTask,
@@ -11,8 +10,10 @@ use crate::kuadrant::pipeline::tasks::{
 use crate::kuadrant::pipeline::tasks::{PendingTask, Task, TaskOutcome};
 use crate::kuadrant::ReqRespCtx;
 use crate::record_error;
-use crate::services::{RateLimitService, Service};
+use crate::services::{DynamicService, Service};
 use cel::Value;
+use prost_reflect::DynamicMessage;
+use prost_reflect::Value as ProtoValue;
 use std::rc::Rc;
 use tracing::{debug, error};
 
@@ -71,7 +72,7 @@ pub struct RateLimitTask {
 
     // Rate limit configuration
     scope: String,
-    service: Rc<RateLimitService>,
+    service: Rc<DynamicService>,
 
     // Conditional data for building descriptors
     conditional_data_sets: Vec<ConditionalData>,
@@ -80,33 +81,13 @@ pub struct RateLimitTask {
 
 /// Creates a new RL task
 impl RateLimitTask {
-    pub fn new(
-        task_id: String,
-        dependencies: Vec<String>,
-        service: Rc<RateLimitService>,
-        scope: String,
-        predicates: Vec<Predicate>,
-        conditional_data_sets: Vec<ConditionalData>,
-        pauses_filter: bool,
-    ) -> Self {
-        Self {
-            task_id,
-            dependencies,
-            pauses_filter,
-            scope,
-            service,
-            predicates,
-            conditional_data_sets,
-        }
-    }
-
     /// Creates a new RL task prior caching its needed attributes
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_attributes(
         ctx: &ReqRespCtx,
         task_id: String,
         dependencies: Vec<String>,
-        service: Rc<RateLimitService>,
+        service: Rc<DynamicService>,
         scope: String,
         predicates: Vec<Predicate>,
         conditional_data_sets: Vec<ConditionalData>,
@@ -122,15 +103,50 @@ impl RateLimitTask {
                 .map(|data| data.value.eval(ctx))
         });
 
-        Self::new(
+        Self {
             task_id,
             dependencies,
-            service,
-            scope,
-            predicates,
-            conditional_data_sets,
             pauses_filter,
-        )
+            scope,
+            service,
+            conditional_data_sets,
+            predicates,
+        }
+    }
+
+    fn add_request_data_entries(
+        &self,
+        ctx: &mut ReqRespCtx,
+        mut descriptors: Vec<RateLimitDescriptor>,
+    ) -> Vec<RateLimitDescriptor> {
+        let request_data = ctx.eval_request_data();
+        if !request_data.is_empty() {
+            let entries: Vec<_> = request_data
+                .iter()
+                .filter_map(|entry| match &entry.result {
+                    Ok(AttributeState::Available(Value::String(value))) => {
+                        let key = if entry.domain.is_empty() || entry.domain == "metrics.labels" {
+                            entry.field.clone()
+                        } else {
+                            format!("{}.{}", entry.domain, entry.field)
+                        };
+                        Some(Entry {
+                            key,
+                            value: value.to_string(),
+                        })
+                    }
+                    _ => None,
+                })
+                .collect();
+
+            if !entries.is_empty() {
+                descriptors.push(RateLimitDescriptor {
+                    entries,
+                    limit: None,
+                });
+            }
+        }
+        descriptors
     }
 
     /// Builds the rate limit descriptors from the context
@@ -298,15 +314,15 @@ impl Task for RateLimitTask {
             domain_override
         };
 
+        let descriptors = self.add_request_data_entries(ctx, descriptors);
+        let cel_expr = generate_ratelimit_request_cel(&domain, hits_addend, &descriptors);
+
         // Dispatch the rate limit service message
         let token_id = {
             let _span =
                 tracing::debug_span!("ratelimit_request", task_id = self.task_id, scope = domain)
                     .entered();
-            match self
-                .service
-                .dispatch_ratelimit(ctx, &domain, descriptors, hits_addend)
-            {
+            match self.service.dispatch_dynamic(ctx, &cel_expr) {
                 Ok(id) => id,
                 Err(e) => {
                     error!("Failed to dispatch rate limit: {}", e);
@@ -373,45 +389,123 @@ impl Task for RateLimitTask {
     }
 }
 
-fn process_rl_response(response: RateLimitResponse) -> TaskOutcome {
-    // Process based on response code
-    match response.overall_code {
-        code if code == rate_limit_response::Code::Ok as i32 => {
-            // Rate limit check passed
-            if !response.response_headers_to_add.is_empty() {
-                let headers = from_envoy_header_value(&response.response_headers_to_add);
-                return TaskOutcome::Requeued(vec![Box::new(ModifyHeadersTask::new(
-                    HeaderOperation::Set(headers),
-                    HeadersType::HttpResponseHeaders,
-                ))]);
+fn process_rl_response(response: DynamicMessage) -> TaskOutcome {
+    // Extract overall_code
+    let overall_code = match response.get_field_by_name("overall_code") {
+        Some(field) => match field.as_ref() {
+            ProtoValue::I32(code) => *code,
+            ProtoValue::EnumNumber(code) => *code,
+            _ => {
+                error!("overall_code is not an integer");
+                return TaskOutcome::Failed;
             }
-            TaskOutcome::Done
+        },
+        None => {
+            error!("overall_code field not found");
+            return TaskOutcome::Failed;
         }
-        code if code == rate_limit_response::Code::OverLimit as i32 => {
-            // Rate limit exceeded - return 429
-            let headers = from_envoy_header_value(&response.response_headers_to_add);
-            let status_code = crate::envoy::StatusCode::TooManyRequests as u32;
-            let body = Some("Too Many Requests\n".to_string());
+    };
 
-            TaskOutcome::Terminate(Box::new(SendReplyTask::new(
-                status_code,
-                headers.into_inner(),
-                body,
-            )))
+    // Extract response headers
+    let response_headers = match response.get_field_by_name("response_headers_to_add") {
+        Some(field) => match field.as_ref() {
+            ProtoValue::List(headers_list) => {
+                let mut headers = Vec::new();
+                for header_item in headers_list {
+                    if let ProtoValue::Message(header_msg) = header_item {
+                        let key = match header_msg.get_field_by_name("key") {
+                            Some(k) => match k.as_ref() {
+                                ProtoValue::String(s) => s.to_string(),
+                                _ => continue,
+                            },
+                            None => continue,
+                        };
+                        let value = match header_msg.get_field_by_name("value") {
+                            Some(v) => match v.as_ref() {
+                                ProtoValue::String(s) => s.to_string(),
+                                _ => continue,
+                            },
+                            None => continue,
+                        };
+                        headers.push((key, value));
+                    }
+                }
+                headers
+            }
+            _ => Vec::new(),
+        },
+        None => Vec::new(),
+    };
+
+    // Process based on response code
+    if overall_code == rate_limit_response::Code::Ok as i32 {
+        if !response_headers.is_empty() {
+            return TaskOutcome::Requeued(vec![Box::new(ModifyHeadersTask::new(
+                HeaderOperation::Set(response_headers.into()),
+                HeadersType::HttpResponseHeaders,
+            ))]);
         }
-        i32::MIN..=i32::MAX => {
-            // Unknown code or error response
-            TaskOutcome::Failed
-        }
+        TaskOutcome::Done
+    } else if overall_code == rate_limit_response::Code::OverLimit as i32 {
+        let status_code = crate::envoy::StatusCode::TooManyRequests as u32;
+        let body = Some("Too Many Requests\n".to_string());
+
+        TaskOutcome::Terminate(Box::new(SendReplyTask::new(
+            status_code,
+            response_headers,
+            body,
+        )))
+    } else {
+        // Unknown code or error response
+        TaskOutcome::Failed
     }
 }
 
-pub fn from_envoy_header_value(headers: &[HeaderValue]) -> Headers {
-    let vec: Vec<(String, String)> = headers
+fn generate_ratelimit_request_cel(
+    domain: &str,
+    hits_addend: u32,
+    descriptors: &[RateLimitDescriptor],
+) -> String {
+    fn escape_string(s: &str) -> String {
+        s.replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n")
+            .replace('\r', "\\r")
+            .replace('\t', "\\t")
+    }
+
+    let descriptors_cel: Vec<String> = descriptors
         .iter()
-        .map(|hv| (hv.key.to_owned(), hv.value.to_owned()))
+        .map(|descriptor| {
+            let entries_cel: Vec<String> = descriptor
+                .entries
+                .iter()
+                .map(|entry| {
+                    format!(
+                        "envoy.extensions.common.ratelimit.v3.RateLimitDescriptor.Entry {{ key: \"{}\", value: \"{}\" }}",
+                        escape_string(&entry.key),
+                        escape_string(&entry.value)
+                    )
+                })
+                .collect();
+
+            format!(
+                "envoy.extensions.common.ratelimit.v3.RateLimitDescriptor {{ entries: [{}] }}",
+                entries_cel.join(", ")
+            )
+        })
         .collect();
-    vec.into()
+
+    format!(
+        r#"envoy.service.ratelimit.v3.RateLimitRequest {{
+    domain: "{}",
+    hits_addend: {}u,
+    descriptors: [{}]
+}}"#,
+        escape_string(domain),
+        hits_addend,
+        descriptors_cel.join(", ")
+    )
 }
 
 #[cfg(test)]
@@ -430,13 +524,16 @@ mod tests {
         ReqRespCtx::new(Arc::new(mock_host))
     }
 
-    fn create_test_service() -> RateLimitService {
-        RateLimitService::new(
+    fn create_test_service() -> DynamicService {
+        use crate::filter::DescriptorManager;
+
+        DynamicService::new(
             "test".to_string(),
+            "envoy.service.ratelimit.v3.RateLimitService".to_string(),
+            "ShouldRateLimit".to_string(),
             std::time::Duration::from_secs(1),
-            "test",
-            "POST",
             FailureMode::Deny,
+            Rc::new(DescriptorManager::default()),
         )
     }
 
