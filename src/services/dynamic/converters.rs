@@ -1190,7 +1190,7 @@ mod tests {
             assert_eq!(
                 list.get(1)
                     .and_then(|v| v.downcast_ref::<CelString>())
-                    .map(|s| s.ingner()),
+                    .map(|s| s.inner()),
                 Some("second")
             );
             assert_eq!(

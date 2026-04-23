@@ -83,14 +83,17 @@ impl ServiceInstance {
                     ServiceError::Dispatch("Missing grpc_method for Dynamic service".to_string())
                 })?;
 
-                Ok(ServiceInstance::Dynamic(Rc::new(DynamicService::new(
+                let dynamic_service = DynamicService::new(
                     service.endpoint,
                     grpc_service.clone(),
                     grpc_method.clone(),
                     service.timeout.0,
                     service.failure_mode,
                     Rc::clone(descriptor_manager),
-                ))))
+                );
+                dynamic_service.register_for_fetch();
+
+                Ok(ServiceInstance::Dynamic(Rc::new(dynamic_service)))
             }
         }
     }

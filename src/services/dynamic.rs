@@ -36,8 +36,6 @@ impl DynamicService {
         failure_mode: FailureMode,
         descriptor_manager: Rc<DescriptorManager>,
     ) -> Self {
-        descriptor_manager.add_expected(DescriptorKey::new(endpoint.clone(), grpc_service.clone()));
-
         Self {
             upstream_name: endpoint,
             service_name: grpc_service,
@@ -49,11 +47,17 @@ impl DynamicService {
         }
     }
 
+    pub fn register_for_fetch(&self) {
+        self.descriptor_manager.add_expected(DescriptorKey::new(
+            self.upstream_name.clone(),
+            self.service_name.clone(),
+        ));
+    }
+
     pub fn failure_mode(&self) -> FailureMode {
         self.failure_mode
     }
 
-    #[allow(dead_code)]
     pub fn dispatch_dynamic(
         &self,
         ctx: &mut ReqRespCtx,
@@ -158,6 +162,7 @@ impl Service for DynamicService {
         let output_descriptor = method_descriptor.output();
         let response = DynamicMessage::decode(output_descriptor, message.as_slice())
             .map_err(|e| ServiceError::Decode(format!("Failed to decode response: {}", e)))?;
+
         Ok(response)
     }
 }
