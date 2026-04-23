@@ -77,10 +77,18 @@ impl DescriptorConverter {
     /// Convert a protobuf MessageDescriptor to a CEL StructDef
     /// Supports nested messages - they will be referenced by name
     pub fn to_struct_def(descriptor: &MessageDescriptor) -> Result<StructDef, ConversionError> {
+        use cel::common::types::*;
+        use prost_reflect::Cardinality;
+
         let mut struct_def = StructDef::new(descriptor.full_name().to_string());
 
         for field in descriptor.fields() {
-            let cel_type = Self::protobuf_kind_to_cel_type(field.kind())?;
+            let cel_type = if field.cardinality() == Cardinality::Repeated {
+                LIST_TYPE
+            } else {
+                Self::protobuf_kind_to_cel_type(field.kind())?
+            };
+
             struct_def = struct_def.add_field(field.name().to_string(), cel_type);
         }
 
@@ -145,6 +153,46 @@ impl MessageConverter {
     }
 
     fn cel_val_to_proto_value(
+        cel_val: &dyn cel::common::value::Val,
+        field: &FieldDescriptor,
+    ) -> Result<ProtoValue, ConversionError> {
+        use prost_reflect::Cardinality;
+
+        if field.cardinality() == Cardinality::Repeated {
+            Self::cel_list_to_proto_list(cel_val, field)
+        } else {
+            Self::cel_val_to_single_proto_value(cel_val, field)
+        }
+    }
+
+    fn cel_list_to_proto_list(
+        cel_val: &dyn cel::common::value::Val,
+        field: &FieldDescriptor,
+    ) -> Result<ProtoValue, ConversionError> {
+        use cel::common::types::CelList;
+
+        let field_name = field.name();
+
+        let list =
+            cel_val
+                .downcast_ref::<CelList>()
+                .ok_or_else(|| ConversionError::TypeMismatch {
+                    field: field_name.to_string(),
+                    expected: "list".to_string(),
+                    got: format!("{:?}", cel_val),
+                })?;
+
+        let mut proto_values = Vec::new();
+        for item in list.iter() {
+            // Process each list element as a single (non-repeated) value
+            let element_value = Self::cel_val_to_single_proto_value(item.as_ref(), field)?;
+            proto_values.push(element_value);
+        }
+
+        Ok(ProtoValue::List(proto_values))
+    }
+
+    fn cel_val_to_single_proto_value(
         cel_val: &dyn cel::common::value::Val,
         field: &FieldDescriptor,
     ) -> Result<ProtoValue, ConversionError> {
@@ -250,10 +298,11 @@ impl MessageConverter {
                         got: format!("{:?}", cel_val),
                     }
                 })?;
-                Ok(ProtoValue::Bytes(b.inner().to_vec().into()))
+                Ok(ProtoValue::Bytes(prost::bytes::Bytes::from(
+                    b.inner().to_vec(),
+                )))
             }
             ProtoKind::Enum(enum_desc) => {
-                // CEL represents enums as integers
                 let i = cel_val.downcast_ref::<CelInt>().ok_or_else(|| {
                     ConversionError::TypeMismatch {
                         field: field_name.to_string(),
@@ -279,7 +328,6 @@ impl MessageConverter {
                 Ok(ProtoValue::EnumNumber(value.number()))
             }
             ProtoKind::Message(nested_desc) => {
-                // Nested message - recurse
                 let nested_message =
                     Self::struct_from_val_to_message(cel_val, &nested_desc, &field_name)?;
                 Ok(ProtoValue::Message(nested_message))
