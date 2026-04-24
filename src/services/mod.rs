@@ -5,20 +5,18 @@ use std::{rc::Rc, time::Duration};
 
 mod auth;
 mod dynamic;
-pub mod rate_limit;
 mod tracing;
 
 pub use auth::AuthService;
 pub use dynamic::DynamicService;
-pub use rate_limit::RateLimitService;
 pub use tracing::TracingService;
 
 #[derive(Clone)]
 pub enum ServiceInstance {
     Auth(Rc<AuthService>),
-    RateLimit(Rc<RateLimitService>),
-    RateLimitCheck(Rc<RateLimitService>),
-    RateLimitReport(Rc<RateLimitService>),
+    RateLimit(Rc<DynamicService>),
+    RateLimitCheck(Rc<DynamicService>),
+    RateLimitReport(Rc<DynamicService>),
     Tracing(Option<Rc<TracingService>>),
     Dynamic(Rc<DynamicService>),
 }
@@ -45,31 +43,32 @@ impl ServiceInstance {
                 service.timeout.0,
                 service.failure_mode,
             )))),
-            ServiceType::RateLimit => {
-                Ok(ServiceInstance::RateLimit(Rc::new(RateLimitService::new(
-                    service.endpoint,
-                    service.timeout.0,
-                    "envoy.service.ratelimit.v3.RateLimitService",
-                    "ShouldRateLimit",
-                    service.failure_mode,
-                ))))
-            }
+            ServiceType::RateLimit => Ok(ServiceInstance::RateLimit(Rc::new(DynamicService::new(
+                service.endpoint,
+                "envoy.service.ratelimit.v3.RateLimitService".to_string(),
+                "ShouldRateLimit".to_string(),
+                service.timeout.0,
+                service.failure_mode,
+                Rc::clone(descriptor_manager),
+            )))),
             ServiceType::RateLimitCheck => Ok(ServiceInstance::RateLimitCheck(Rc::new(
-                RateLimitService::new(
+                DynamicService::new(
                     service.endpoint,
+                    "kuadrant.service.ratelimit.v1.RateLimitService".to_string(),
+                    "CheckRateLimit".to_string(),
                     service.timeout.0,
-                    "kuadrant.service.ratelimit.v1.RateLimitService",
-                    "CheckRateLimit",
                     service.failure_mode,
+                    Rc::clone(descriptor_manager),
                 ),
             ))),
             ServiceType::RateLimitReport => Ok(ServiceInstance::RateLimitReport(Rc::new(
-                RateLimitService::new(
+                DynamicService::new(
                     service.endpoint,
+                    "kuadrant.service.ratelimit.v1.RateLimitService".to_string(),
+                    "Report".to_string(),
                     service.timeout.0,
-                    "kuadrant.service.ratelimit.v1.RateLimitService",
-                    "Report",
                     service.failure_mode,
+                    Rc::clone(descriptor_manager),
                 ),
             ))),
             ServiceType::Tracing => Ok(ServiceInstance::Tracing(Some(Rc::new(
@@ -83,14 +82,17 @@ impl ServiceInstance {
                     ServiceError::Dispatch("Missing grpc_method for Dynamic service".to_string())
                 })?;
 
-                Ok(ServiceInstance::Dynamic(Rc::new(DynamicService::new(
+                let dynamic_service = DynamicService::new(
                     service.endpoint,
                     grpc_service.clone(),
                     grpc_method.clone(),
                     service.timeout.0,
                     service.failure_mode,
                     Rc::clone(descriptor_manager),
-                ))))
+                );
+                dynamic_service.register_for_fetch();
+
+                Ok(ServiceInstance::Dynamic(Rc::new(dynamic_service)))
             }
         }
     }

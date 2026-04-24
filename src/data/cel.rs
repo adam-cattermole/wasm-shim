@@ -2,8 +2,7 @@ use crate::data::attribute::{AttributeError, AttributeState, Path};
 use crate::data::cel::errors::{CelError, EvaluationError};
 use crate::data::Headers;
 use crate::kuadrant::ReqRespCtx;
-use cel::common::ast::{EntryExpr, Expr, IdedExpr};
-use cel::common::value::CelVal;
+use cel::common::ast::{EntryExpr, Expr, IdedExpr, LiteralValue};
 use cel::extractors::{Arguments, This};
 use cel::objects::{Key, Map, ValueType};
 use cel::parser::{Expression as CelExpression, ParseErrors, Parser};
@@ -194,10 +193,8 @@ impl Expression {
         };
 
         for binding in ["request", "metadata", "source", "destination", "auth"] {
-            ctx.add_variable_from_value(
-                binding,
-                map.get(&binding.into()).cloned().unwrap_or(Value::Null),
-            );
+            let key: Key = binding.into();
+            ctx.add_variable_from_value(binding, map.get(&key).cloned().unwrap_or(Value::Null));
         }
 
         let mut response_json_map = HashMap::new();
@@ -240,14 +237,23 @@ pub fn response_body_json(ftx: &FunctionContext, arg: Value) -> ResolveResult {
     let key: Result<Key, Value> = arg.try_into();
     match key {
         Ok(key) => match ftx.ptx.get_variable(RESPONSE_BODY_JSON_DATA) {
-            Ok(Value::Map(map)) => match map.get(&key) {
-                None => Ok(Value::Null),
-                Some(value) => Ok(value.clone()),
+            Some(var) => match Value::try_from(var.as_ref()) {
+                Ok(Value::Map(map)) => match map.get(&key) {
+                    None => Ok(Value::Null),
+                    Some(value) => Ok(value.clone()),
+                },
+                Ok(_) => Err(ExecutionError::FunctionError {
+                    function: RESPONSE_BODY_JSON_FN.to_string(),
+                    message: "Bad internal state!".to_string(),
+                }),
+                Err(_) => Err(ExecutionError::FunctionError {
+                    function: RESPONSE_BODY_JSON_FN.to_string(),
+                    message: "Failed to convert variable to Value".to_string(),
+                }),
             },
-            Err(e) => Err(e),
-            _ => Err(ExecutionError::FunctionError {
+            None => Err(ExecutionError::FunctionError {
                 function: RESPONSE_BODY_JSON_FN.to_string(),
-                message: "Bad internal state!".to_string(),
+                message: format!("Variable {} not found", RESPONSE_BODY_JSON_DATA),
             }),
         },
         Err(e) => Err(ExecutionError::UnexpectedType {
@@ -560,6 +566,7 @@ fn copy(value_type: &ValueType) -> ValueType {
         ValueType::Timestamp => ValueType::Timestamp,
         ValueType::Null => ValueType::Null,
         ValueType::Opaque => ValueType::Opaque,
+        ValueType::Struct => ValueType::Struct,
     }
 }
 
@@ -643,7 +650,7 @@ fn properties<'e>(
         Expr::Call(call) => {
             if call.target.is_none() && call.func_name == "responseBodyJSON" && call.args.len() == 1
             {
-                if let Expr::Literal(CelVal::String(prop)) = &call.args[0].expr {
+                if let Expr::Literal(LiteralValue::String(prop)) = &call.args[0].expr {
                     response_props.push(prop.to_string());
                 }
             }

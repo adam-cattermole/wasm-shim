@@ -187,13 +187,13 @@ impl Blueprint {
                         tasks.push(task);
                     }
                 }
-                ServiceInstance::RateLimit(ratelimit_service)
-                | ServiceInstance::RateLimitCheck(ratelimit_service) => {
+                ServiceInstance::RateLimit(dynamic_service)
+                | ServiceInstance::RateLimitCheck(dynamic_service) => {
                     let task = Box::new(RateLimitTask::new_with_attributes(
                         ctx,
                         action.id.clone(),
                         action.dependencies.clone(),
-                        Rc::clone(ratelimit_service),
+                        Rc::clone(dynamic_service),
                         action.scope.clone(),
                         action.predicates.clone(),
                         action.conditional_data.clone(),
@@ -210,13 +210,13 @@ impl Blueprint {
                         tasks.push(task);
                     }
                 }
-                ServiceInstance::RateLimitReport(ratelimit_service) => {
+                ServiceInstance::RateLimitReport(dynamic_service) => {
                     // parse token usage from response
                     let task = Box::new(RateLimitTask::new_with_attributes(
                         ctx,
                         action.id.clone(),
                         action.dependencies.clone(),
-                        Rc::clone(ratelimit_service),
+                        Rc::clone(dynamic_service),
                         action.scope.clone(),
                         action.predicates.clone(),
                         action.conditional_data.clone(),
