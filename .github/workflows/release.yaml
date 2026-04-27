@@ -45,18 +45,10 @@ jobs:
             echo "Tag ${{ env.TAG }} does not exist - proceeding with release"
           fi
 
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Set up Rust and WASM environment
+        uses: ./.github/actions/setup-rust-wasm
         with:
-          targets: wasm32-wasip1
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Set up protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          version: "3.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build WASM binary
         run: cargo build --release --target wasm32-wasip1

@@ -1,0 +1,29 @@
+name: 'Setup Rust WASM Environment'
+description: 'Set up Rust toolchain with wasm32-wasip1 target, cache, and protoc'
+
+inputs:
+  rust-components:
+    description: 'Additional Rust components (e.g., rustfmt, clippy)'
+    required: false
+    default: ''
+  github-token:
+    description: 'GitHub token for protoc setup'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-wasip1
+        components: ${{ inputs.rust-components }}
+
+    - name: Set up Rust cache
+      uses: Swatinem/rust-cache@v2
+
+    - name: Set up protoc
+      uses: arduino/setup-protoc@v3
+      with:
+        version: "3.x"
+        repo-token: ${{ inputs.github-token }}
