@@ -55,6 +55,7 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
 }
 
 enum DescriptorState {
+    Embedded(u64),
     Missing,
     Pending(u32),
     Resolved(u64),
@@ -116,14 +117,24 @@ impl DescriptorManager {
     }
 
     pub fn add_expected(&self, key: DescriptorKey) {
+        let initial_state = self
+            .embedded
+            .borrow()
+            .get(&key.service)
+            .map(|&hash| DescriptorState::Embedded(hash))
+            .unwrap_or(DescriptorState::Missing);
+
         self.descriptors
             .borrow_mut()
             .entry(key)
-            .or_insert(DescriptorState::Missing);
+            .or_insert(initial_state);
     }
 
     pub fn has_expected(&self) -> bool {
-        !self.descriptors.borrow().is_empty()
+        self.descriptors
+            .borrow()
+            .values()
+            .any(|state| !matches!(state, DescriptorState::Embedded(_)))
     }
 
     pub fn tick_period(&self) -> Duration {
@@ -141,14 +152,10 @@ impl DescriptorManager {
             .borrow()
             .get(&key)
             .and_then(|state| match state {
-                DescriptorState::Resolved(hash) => self.pools.borrow().get(hash).map(Rc::clone),
+                DescriptorState::Embedded(hash) | DescriptorState::Resolved(hash) => {
+                    self.pools.borrow().get(hash).map(Rc::clone)
+                }
                 _ => None,
-            })
-            .or_else(|| {
-                self.embedded
-                    .borrow()
-                    .get(service)
-                    .and_then(|hash| self.pools.borrow().get(hash).map(Rc::clone))
             })
             .ok_or_else(|| DescriptorError::NotAvailable {
                 cluster: cluster.to_string(),
@@ -156,7 +163,7 @@ impl DescriptorManager {
             })
     }
 
-    pub fn register_embedded(&self, service: String, fds_bytes: &[u8], pool: &DescriptorPool) {
+    fn register_embedded(&self, service: String, fds_bytes: &[u8], pool: &DescriptorPool) {
         let content_hash = hash_bytes(fds_bytes);
 
         self.pools
@@ -179,6 +186,13 @@ impl DescriptorManager {
     }
 
     fn insert_pool_from_bytes(&self, key: DescriptorKey, fds_bytes: &[u8], pool: DescriptorPool) {
+        if matches!(
+            self.descriptors.borrow().get(&key),
+            Some(DescriptorState::Embedded(_))
+        ) {
+            return;
+        }
+
         let content_hash = hash_bytes(fds_bytes);
 
         self.pools
@@ -539,15 +553,18 @@ mod tests {
 
         manager.register_embedded("test.TestService".to_string(), &fds_bytes, &pool);
 
+        let key = DescriptorKey::new("any-cluster".to_string(), "test.TestService".to_string());
+        manager.add_expected(key);
+
         let result = manager.get_pool("any-cluster", "test.TestService");
         assert!(result.is_ok());
     }
 
     #[test]
-    fn test_remote_overrides_embedded() {
+    fn test_embedded_not_marked_missing() {
         let manager = DescriptorManager::default();
 
-        let embedded_fd = FileDescriptorProto {
+        let file_descriptor = FileDescriptorProto {
             name: Some("embedded.proto".to_string()),
             package: Some("test".to_string()),
             service: vec![ServiceDescriptorProto {
@@ -557,58 +574,34 @@ mod tests {
             ..Default::default()
         };
 
-        let remote_fd = FileDescriptorProto {
-            name: Some("remote.proto".to_string()),
-            package: Some("test".to_string()),
-            service: vec![ServiceDescriptorProto {
-                name: Some("TestService".to_string()),
-                ..Default::default()
-            }],
-            ..Default::default()
+        let fds = FileDescriptorSet {
+            file: vec![file_descriptor],
         };
 
-        let embedded_fds = FileDescriptorSet {
-            file: vec![embedded_fd],
-        };
-        let remote_fds = FileDescriptorSet {
-            file: vec![remote_fd],
-        };
+        let mut fds_bytes = Vec::new();
+        fds.encode(&mut fds_bytes).unwrap();
 
-        let mut embedded_bytes = Vec::new();
-        embedded_fds.encode(&mut embedded_bytes).unwrap();
-        let mut remote_bytes = Vec::new();
-        remote_fds.encode(&mut remote_bytes).unwrap();
-
-        let embedded_pool = DescriptorPool::from_file_descriptor_set(
-            FileDescriptorSet::decode(embedded_bytes.as_slice()).unwrap(),
-        )
-        .unwrap();
-        let remote_pool = DescriptorPool::from_file_descriptor_set(
-            FileDescriptorSet::decode(remote_bytes.as_slice()).unwrap(),
+        let pool = DescriptorPool::from_file_descriptor_set(
+            FileDescriptorSet::decode(fds_bytes.as_slice()).unwrap(),
         )
         .unwrap();
 
-        manager.register_embedded(
-            "test.TestService".to_string(),
-            &embedded_bytes,
-            &embedded_pool,
-        );
+        manager.register_embedded("test.TestService".to_string(), &fds_bytes, &pool);
 
         let key = DescriptorKey::new("test-cluster".to_string(), "test.TestService".to_string());
-        manager.insert_pool_from_bytes(key, &remote_bytes, remote_pool);
+        manager.add_expected(key.clone());
 
-        let result = manager
-            .get_pool("test-cluster", "test.TestService")
-            .unwrap();
+        assert!(matches!(
+            manager.descriptors.borrow().get(&key),
+            Some(DescriptorState::Embedded(_))
+        ),);
 
-        assert_eq!(
-            result.services().next().unwrap().parent_file().name(),
-            "remote.proto"
-        );
+        assert!(manager.get_missing().is_empty());
+        assert!(!manager.has_expected());
     }
 
     #[test]
-    fn test_embedded_used_when_no_cluster_config() {
+    fn test_embedded_resolves_for_any_cluster() {
         let manager = DescriptorManager::default();
 
         let embedded_fd = FileDescriptorProto {
@@ -639,16 +632,23 @@ mod tests {
             &embedded_pool,
         );
 
-        let result = manager.get_pool("any-cluster", "test.TestService").unwrap();
+        let key_a = DescriptorKey::new("cluster-a".to_string(), "test.TestService".to_string());
+        let key_b = DescriptorKey::new("cluster-b".to_string(), "test.TestService".to_string());
+        manager.add_expected(key_a);
+        manager.add_expected(key_b);
 
+        let result_a = manager.get_pool("cluster-a", "test.TestService").unwrap();
+        let result_b = manager.get_pool("cluster-b", "test.TestService").unwrap();
+
+        assert!(Rc::ptr_eq(&result_a, &result_b));
         assert_eq!(
-            result.services().next().unwrap().parent_file().name(),
+            result_a.services().next().unwrap().parent_file().name(),
             "embedded.proto"
         );
     }
 
     #[test]
-    fn test_embedded_and_remote_deduplicate_when_identical() {
+    fn test_embedded_entries_share_pool_across_clusters() {
         let manager = DescriptorManager::default();
         let initial_pool_count = manager.pools.borrow().len();
 
@@ -669,27 +669,66 @@ mod tests {
         let mut fds_bytes = Vec::new();
         fds.encode(&mut fds_bytes).unwrap();
 
-        let embedded_pool = DescriptorPool::from_file_descriptor_set(
-            FileDescriptorSet::decode(fds_bytes.as_slice()).unwrap(),
-        )
-        .unwrap();
-        let remote_pool = DescriptorPool::from_file_descriptor_set(
+        let pool = DescriptorPool::from_file_descriptor_set(
             FileDescriptorSet::decode(fds_bytes.as_slice()).unwrap(),
         )
         .unwrap();
 
-        manager.register_embedded("test.TestService".to_string(), &fds_bytes, &embedded_pool);
+        manager.register_embedded("test.TestService".to_string(), &fds_bytes, &pool);
 
-        let key = DescriptorKey::new("test-cluster".to_string(), "test.TestService".to_string());
-        manager.insert_pool_from_bytes(key, &fds_bytes, remote_pool);
+        let key_a = DescriptorKey::new("cluster-a".to_string(), "test.TestService".to_string());
+        let key_b = DescriptorKey::new("cluster-b".to_string(), "test.TestService".to_string());
+        manager.add_expected(key_a);
+        manager.add_expected(key_b);
 
-        let embedded_result = manager.get_pool("any-cluster", "test.TestService").unwrap();
-        let remote_result = manager
-            .get_pool("test-cluster", "test.TestService")
-            .unwrap();
+        let result_a = manager.get_pool("cluster-a", "test.TestService").unwrap();
+        let result_b = manager.get_pool("cluster-b", "test.TestService").unwrap();
 
-        assert!(Rc::ptr_eq(&embedded_result, &remote_result));
-
+        assert!(Rc::ptr_eq(&result_a, &result_b));
         assert_eq!(manager.pools.borrow().len(), initial_pool_count + 1);
+    }
+
+    #[test]
+    fn test_add_expected_embedded_service() {
+        let manager = DescriptorManager::default();
+
+        let key = DescriptorKey::new(
+            "limitador-cluster".to_string(),
+            "envoy.service.ratelimit.v3.RateLimitService".to_string(),
+        );
+        manager.add_expected(key.clone());
+
+        assert!(matches!(
+            manager.descriptors.borrow().get(&key),
+            Some(DescriptorState::Embedded(_))
+        ));
+        assert!(!manager.has_expected());
+        assert!(manager.get_missing().is_empty());
+
+        let pool = manager
+            .get_pool(
+                "limitador-cluster",
+                "envoy.service.ratelimit.v3.RateLimitService",
+            )
+            .expect("Should have embedded rate limit pool");
+        assert!(Rc::strong_count(&pool) >= 1);
+    }
+
+    #[test]
+    fn test_add_expected_non_embedded_marks_missing() {
+        let manager = DescriptorManager::default();
+
+        let key = DescriptorKey::new("custom-cluster".to_string(), "custom.Service".to_string());
+        manager.add_expected(key.clone());
+
+        assert!(matches!(
+            manager.descriptors.borrow().get(&key),
+            Some(DescriptorState::Missing)
+        ));
+        assert!(manager.has_expected());
+
+        let missing = manager.get_missing();
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0], key);
     }
 }
