@@ -36,6 +36,8 @@ impl DynamicService {
         failure_mode: FailureMode,
         descriptor_manager: Rc<DescriptorManager>,
     ) -> Self {
+        descriptor_manager.add_expected(DescriptorKey::new(endpoint.clone(), grpc_service.clone()));
+
         Self {
             upstream_name: endpoint,
             service_name: grpc_service,
@@ -45,13 +47,6 @@ impl DynamicService {
             descriptor_manager,
             cel_env: Default::default(),
         }
-    }
-
-    pub fn register_for_fetch(&self) {
-        self.descriptor_manager.add_expected(DescriptorKey::new(
-            self.upstream_name.clone(),
-            self.service_name.clone(),
-        ));
     }
 
     pub fn failure_mode(&self) -> FailureMode {
